@@ -39,8 +39,12 @@
 //     path that executes a non-read-only plan without a valid token. The
 //     approval_hint in plan responses tells the agent to ask a human to run
 //     `awsmux approve <plan-id>`.
-//   - Executed plans get Status PlanExecuted + ExecutionID and are saved,
-//     so a plan cannot be executed twice.
+//   - execute_aws_plan re-verifies live identities (core.VerifyIdentities)
+//     against the ones recorded in the plan before running anything.
+//   - Executed plans are claimed via core.ClaimPlan (an O_EXCL claim file,
+//     atomic across processes) and then saved with Status PlanExecuted +
+//     ExecutionID, so a plan cannot be executed twice, even by another MCP
+//     server or the CLI concurrently.
 //   - Async executions run in a goroutine, live in a mutex-guarded
 //     registry keyed by execution ID with their cancel func, and are saved
 //     to the store when done.

@@ -18,7 +18,10 @@ func setupStore(t *testing.T) string {
 func mkStoredPlan(t *testing.T) *Plan {
 	t.Helper()
 	p, err := NewPlan("ec2", "describe-instances", []string{"--max-items", "5"},
-		[]Target{{ID: "dev@us-east-1", Profile: "dev", Region: "us-east-1"}}, 0)
+		[]Target{{
+			ID: "dev@us-east-1", Profile: "dev", Region: "us-east-1",
+			AccountID: "111111111111", Principal: "arn:aws:iam::111111111111:user/dev",
+		}}, 0)
 	if err != nil {
 		t.Fatalf("NewPlan: %v", err)
 	}
@@ -89,6 +92,29 @@ func TestPlanAmbiguousPrefix(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "ambiguous") {
 		t.Errorf("error should mention ambiguity, got: %v", err)
+	}
+}
+
+func TestClaimPlanExecutesAtMostOnce(t *testing.T) {
+	setupStore(t)
+	p := mkStoredPlan(t)
+	if err := SavePlan(p); err != nil {
+		t.Fatalf("SavePlan: %v", err)
+	}
+	if err := ClaimPlan(p.ID, "exec-one"); err != nil {
+		t.Fatalf("first claim: %v", err)
+	}
+	// A second claimant (another process, or MCP plus the CLI) must lose.
+	if err := ClaimPlan(p.ID, "exec-two"); err == nil {
+		t.Error("second claim should fail")
+	}
+	// The claim file must not confuse plan listing or prefix lookup.
+	if got, err := LoadPlan(p.ID[:12]); err != nil || got.ID != p.ID {
+		t.Errorf("prefix lookup after claim: got %v, err %v", got, err)
+	}
+	plans, err := ListPlans()
+	if err != nil || len(plans) != 1 {
+		t.Errorf("ListPlans after claim: %d plans, err %v", len(plans), err)
 	}
 }
 

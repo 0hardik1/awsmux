@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -22,13 +23,35 @@ const DefaultConcurrency = 100
 // maxCapture caps stored stdout/stderr per target at 64 KiB.
 const maxCapture = 64 * 1024
 
+// reservedArgs are the global AWS CLI options awsmux itself generates per
+// target. The AWS CLI honors the last occurrence of a global option, so a
+// duplicate in user args would silently override the selected target.
+var reservedArgs = []string{"--profile", "--region"}
+
+// ValidateArgs rejects extra CLI arguments that would override the
+// per-target identity options BuildCommand generates ("--profile x" or
+// "--profile=x", same for --region). Without this, an approved plan could be
+// redirected at a different account or region than the one it was approved
+// against.
+func ValidateArgs(args []string) error {
+	for _, a := range args {
+		for _, r := range reservedArgs {
+			if a == r || strings.HasPrefix(a, r+"=") {
+				return fmt.Errorf("argument %q is not allowed: awsmux sets %s per target", a, r)
+			}
+		}
+	}
+	return nil
+}
+
 // BuildCommand returns the argv (excluding the "aws" binary itself) for one
 // target:
 //
 //	--profile <p> [--region <r>] --output json <service> <operation> <args...>
 //
 // Region is omitted when the target's Region is empty. If args already
-// contain "--output", do not add another.
+// contain "--output", do not add another. Args must have passed ValidateArgs
+// so they cannot override the generated --profile/--region.
 func BuildCommand(t Target, service, operation string, args []string) []string {
 	argv := []string{"--profile", t.Profile}
 	if t.Region != "" {
