@@ -132,28 +132,34 @@ func CheckVerified(targets []Target) error {
 	return nil
 }
 
-// VerifyIdentities re-resolves each planned target's identity and errors when
-// any STS check fails or the live account/principal no longer matches what
-// the plan recorded, so a credential or profile-config change between
-// approval and execution cannot redirect the run at another account.
-// Freshness is bounded by IdentityCacheTTL.
+// VerifyIdentities re-resolves each planned target's identity with a live
+// STS call and errors when any check fails or the live account/principal no
+// longer matches what the plan recorded, so a credential or profile-config
+// change between approval and execution cannot redirect the run at another
+// account. The identity cache is deliberately never consulted here: a cache
+// entry vouches for who the credentials were up to IdentityCacheTTL ago, and
+// execution runs with the credentials as they are now.
 func VerifyIdentities(ctx context.Context, planned []Target) error {
-	fresh := make([]Target, len(planned))
-	for i, t := range planned {
-		fresh[i] = NewTarget(t.Profile, t.Region)
+	var profiles []string
+	seen := make(map[string]bool)
+	for _, t := range planned {
+		if !seen[t.Profile] {
+			seen[t.Profile] = true
+			profiles = append(profiles, t.Profile)
+		}
 	}
-	fresh = Preflight(ctx, fresh)
+	ids := liveIdentities(ctx, profiles)
 
 	var problems []string
-	for i := range planned {
-		p, f := planned[i], fresh[i]
+	for _, t := range planned {
+		id := ids[t.Profile]
 		switch {
-		case f.PreflightErr != "":
-			problems = append(problems, fmt.Sprintf("%s: %s", p.ID, f.PreflightErr))
-		case f.AccountID != p.AccountID || f.Principal != p.Principal:
+		case id.Err != "":
+			problems = append(problems, fmt.Sprintf("%s: %s", t.ID, id.Err))
+		case id.AccountID != t.AccountID || id.ARN != t.Principal:
 			problems = append(problems, fmt.Sprintf(
 				"%s: identity changed since planning (was %s in account %s, now %s in account %s)",
-				p.ID, p.Principal, p.AccountID, f.Principal, f.AccountID))
+				t.ID, t.Principal, t.AccountID, id.ARN, id.AccountID))
 		}
 	}
 	if len(problems) > 0 {
@@ -161,6 +167,43 @@ func VerifyIdentities(ctx context.Context, planned []Target) error {
 			len(problems), strings.Join(problems, "; "))
 	}
 	return nil
+}
+
+// liveIdentities resolves every profile with a fresh STS call, bounded by
+// preflightConcurrency, bypassing the cache on read. Successes still refresh
+// the cache so later discovery stays warm and consistent with the newest
+// truth.
+func liveIdentities(ctx context.Context, profiles []string) map[string]Identity {
+	ids := make(map[string]Identity, len(profiles))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, preflightConcurrency)
+	for _, p := range profiles {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			id := stsCallerIdentity(ctx, p)
+			mu.Lock()
+			ids[p] = id
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+
+	cache := loadIdentityCache()
+	dirty := false
+	for _, p := range profiles {
+		if id := ids[p]; id.Err == "" {
+			cache[p] = id
+			dirty = true
+		}
+	}
+	if dirty {
+		saveIdentityCache(cache)
+	}
+	return ids
 }
 
 // MarkDuplicates flags every target whose (AccountID, Principal, Region)
