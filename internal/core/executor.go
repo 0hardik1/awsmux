@@ -153,7 +153,7 @@ func runTarget(ctx context.Context, t Target, service, operation string, args []
 		defer cancel()
 	}
 
-	cmd := exec.CommandContext(runCtx, "aws", BuildCommand(t, service, operation, args)...)
+	cmd := awsExec(runCtx, BuildCommand(t, service, operation, args)...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

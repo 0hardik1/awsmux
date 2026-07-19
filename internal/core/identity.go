@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -141,7 +140,7 @@ func MarkDuplicates(targets []Target) []Target {
 func stsCallerIdentity(ctx context.Context, profile string) Identity {
 	id := Identity{Profile: profile, CheckedAt: time.Now().UTC()}
 
-	cmd := exec.CommandContext(ctx, "aws", "sts", "get-caller-identity",
+	cmd := awsExec(ctx, "sts", "get-caller-identity",
 		"--profile", profile, "--output", "json")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
