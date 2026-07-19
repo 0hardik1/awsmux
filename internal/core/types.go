@@ -109,7 +109,7 @@ type Plan struct {
 
 // ExecOptions tune the worker pool.
 type ExecOptions struct {
-	Concurrency int           // <=0 means default 4
+	Concurrency int           // <=0 means DefaultConcurrency (100)
 	Timeout     time.Duration // per target, 0 = none
 	// MaxErrors stops scheduling new targets after N failures; 0 = no cap.
 	MaxErrors          int

@@ -22,8 +22,8 @@ const IdentityCacheTTL = 5 * time.Minute
 // so a 100-profile fleet verifies in a few seconds.
 const preflightConcurrency = 32
 
-// Preflight verifies each target's identity concurrently (bounded at 8 in
-// flight) by shelling out to:
+// Preflight verifies each target's identity concurrently (bounded by
+// preflightConcurrency) by shelling out to:
 //
 //	aws sts get-caller-identity --profile <p> --output json
 //
@@ -110,6 +110,57 @@ func LookupIdentity(ctx context.Context, profile string) Identity {
 		saveIdentityCache(cache)
 	}
 	return id
+}
+
+// CheckVerified errors unless every target carries a successfully preflighted
+// identity (non-empty AccountID, no PreflightErr). Planning and execution
+// must never proceed against a target whose account was not verified.
+func CheckVerified(targets []Target) error {
+	var bad []string
+	for _, t := range targets {
+		switch {
+		case t.PreflightErr != "":
+			bad = append(bad, fmt.Sprintf("%s (%s)", t.ID, t.PreflightErr))
+		case t.AccountID == "":
+			bad = append(bad, fmt.Sprintf("%s (identity never verified)", t.ID))
+		}
+	}
+	if len(bad) > 0 {
+		return fmt.Errorf("identity preflight failed for %d target(s): %s",
+			len(bad), strings.Join(bad, "; "))
+	}
+	return nil
+}
+
+// VerifyIdentities re-resolves each planned target's identity and errors when
+// any STS check fails or the live account/principal no longer matches what
+// the plan recorded, so a credential or profile-config change between
+// approval and execution cannot redirect the run at another account.
+// Freshness is bounded by IdentityCacheTTL.
+func VerifyIdentities(ctx context.Context, planned []Target) error {
+	fresh := make([]Target, len(planned))
+	for i, t := range planned {
+		fresh[i] = NewTarget(t.Profile, t.Region)
+	}
+	fresh = Preflight(ctx, fresh)
+
+	var problems []string
+	for i := range planned {
+		p, f := planned[i], fresh[i]
+		switch {
+		case f.PreflightErr != "":
+			problems = append(problems, fmt.Sprintf("%s: %s", p.ID, f.PreflightErr))
+		case f.AccountID != p.AccountID || f.Principal != p.Principal:
+			problems = append(problems, fmt.Sprintf(
+				"%s: identity changed since planning (was %s in account %s, now %s in account %s)",
+				p.ID, p.Principal, p.AccountID, f.Principal, f.AccountID))
+		}
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("identity verification failed for %d target(s): %s",
+			len(problems), strings.Join(problems, "; "))
+	}
+	return nil
 }
 
 // MarkDuplicates flags every target whose (AccountID, Principal, Region)

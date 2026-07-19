@@ -67,8 +67,19 @@ func TestComputeHashArgsNilVsEmpty(t *testing.T) {
 	}
 }
 
+// verifiedTargets is a minimal target list that passes NewPlan's identity
+// check: NewPlan refuses targets without a preflighted AccountID/Principal.
+func verifiedTargets() []Target {
+	return []Target{{
+		ID:        "dev",
+		Profile:   "dev",
+		AccountID: "111111111111",
+		Principal: "arn:aws:iam::111111111111:user/dev",
+	}}
+}
+
 func TestNewPlan(t *testing.T) {
-	targets := []Target{{ID: "dev", Profile: "dev"}}
+	targets := verifiedTargets()
 
 	if _, err := NewPlan("ec2", "describe-instances", nil, nil, 0); err == nil {
 		t.Error("NewPlan with no targets should error")
@@ -107,7 +118,7 @@ func TestNewPlan(t *testing.T) {
 }
 
 func TestCheckApprovalReadOnly(t *testing.T) {
-	p, err := NewPlan("ec2", "describe-instances", nil, []Target{{ID: "dev", Profile: "dev"}}, 0)
+	p, err := NewPlan("ec2", "describe-instances", nil, verifiedTargets(), 0)
 	if err != nil {
 		t.Fatalf("NewPlan: %v", err)
 	}
@@ -116,10 +127,49 @@ func TestCheckApprovalReadOnly(t *testing.T) {
 	}
 }
 
+func TestNewPlanRejectsUnverifiedTargets(t *testing.T) {
+	failed := []Target{{ID: "dev", Profile: "dev", PreflightErr: "sts get-caller-identity failed"}}
+	if _, err := NewPlan("ec2", "describe-instances", nil, failed, 0); err == nil {
+		t.Error("a target with a preflight error must not be plannable")
+	}
+	unverified := []Target{{ID: "dev", Profile: "dev"}}
+	if _, err := NewPlan("ec2", "describe-instances", nil, unverified, 0); err == nil {
+		t.Error("a target without a verified identity must not be plannable")
+	}
+}
+
+func TestNewPlanRejectsReservedArgs(t *testing.T) {
+	for _, args := range [][]string{
+		{"--profile", "other"},
+		{"--profile=other"},
+		{"--region", "us-west-2"},
+		{"--region=us-west-2"},
+	} {
+		if _, err := NewPlan("ec2", "describe-instances", args, verifiedTargets(), 0); err == nil {
+			t.Errorf("args %v must be rejected: they would override the per-target identity", args)
+		}
+	}
+}
+
+func TestCheckApprovalRejectsReservedArgs(t *testing.T) {
+	// Hand-built plan, bypassing NewPlan's validation: models a plan stored
+	// before the reserved-args rule, or a forged plan file whose hash is
+	// self-consistent (the hash proves consistency, not provenance).
+	p := basePlan()
+	p.Operation = "describe-instances"
+	p.Classification = ClassReadOnly
+	p.RequiresApproval = false
+	p.Args = []string{"--profile", "other"}
+	p.Hash = p.ComputeHash()
+	if err := CheckApproval(p, ""); err == nil {
+		t.Error("reserved args must fail CheckApproval even with a valid hash")
+	}
+}
+
 func TestCheckApprovalMutating(t *testing.T) {
 	newMutating := func(t *testing.T) *Plan {
 		t.Helper()
-		p, err := NewPlan("iam", "create-user", []string{"--user-name", "x"}, []Target{{ID: "dev", Profile: "dev"}}, 0)
+		p, err := NewPlan("iam", "create-user", []string{"--user-name", "x"}, verifiedTargets(), 0)
 		if err != nil {
 			t.Fatalf("NewPlan: %v", err)
 		}
@@ -186,7 +236,7 @@ func TestCheckApprovalMutating(t *testing.T) {
 }
 
 func TestCheckApprovalExpired(t *testing.T) {
-	p, err := NewPlan("iam", "create-user", nil, []Target{{ID: "dev", Profile: "dev"}}, 0)
+	p, err := NewPlan("iam", "create-user", nil, verifiedTargets(), 0)
 	if err != nil {
 		t.Fatalf("NewPlan: %v", err)
 	}

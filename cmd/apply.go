@@ -56,6 +56,16 @@ func runApply(cmd *cobra.Command, args []string) error {
 	if err := core.CheckApproval(p, applyFlags.approvalToken); err != nil {
 		return Exitf(core.ExitApprovalRequired, "%v", err)
 	}
+	// The approval bound specific accounts; refuse to run if any target's
+	// live identity no longer matches the plan.
+	if err := core.VerifyIdentities(cmd.Context(), p.Targets); err != nil {
+		return Exitf(core.ExitApprovalRequired, "%v", err)
+	}
+	// Cross-process execute-at-most-once gate, shared with the MCP server.
+	execID := core.NewID("exec")
+	if err := core.ClaimPlan(p.ID, execID); err != nil {
+		return Exitf(core.ExitApprovalRequired, "%v", err)
+	}
 
 	var onResult func(core.TargetResult)
 	if applyFlags.format == "jsonl" {
@@ -64,6 +74,7 @@ func runApply(cmd *cobra.Command, args []string) error {
 		}
 	}
 	e := core.Execute(cmd.Context(), p.Targets, p.Service, p.Operation, p.Args, applyFlags.exec.options(), onResult)
+	e.ID = execID // the id the claim reserved, not the executor-minted one
 	e.PlanID = p.ID
 	e.Classification = p.Classification
 

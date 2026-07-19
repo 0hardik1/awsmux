@@ -105,6 +105,12 @@ CLI round trips versus still just 3 awsmux calls
 | `destructive` | delete-*, terminate-*, revoke-*, s3 rm | never `--yes`; typed confirm or plan/approve/apply |
 | `unknown` | anything unrecognized | treated as mutating |
 
+Where the verb convention lies, awsmux overrides it: sts calls that mint
+credentials (assume-role*, get-session-token, get-federation-token) and
+s3api operations that write a local outfile (get-object,
+get-object-torrent, select-object-content) are classified `mutating`
+despite their read-style names.
+
 Stable exit codes for CI and agents: 0 all succeeded, 1 some failed,
 2 selection/config error, 3 approval required or rejected, 4 stopped by
 threshold.

@@ -63,6 +63,29 @@ func TestBuildCommand(t *testing.T) {
 	}
 }
 
+func TestValidateArgs(t *testing.T) {
+	for _, args := range [][]string{
+		nil,
+		{"--max-items", "5"},
+		{"--output", "text"},
+		{"--profile-not-really", "x"}, // only exact flag or = form is reserved
+	} {
+		if err := ValidateArgs(args); err != nil {
+			t.Errorf("ValidateArgs(%v) = %v, want nil", args, err)
+		}
+	}
+	for _, args := range [][]string{
+		{"--profile", "other"},
+		{"--profile=other"},
+		{"--max-items", "5", "--region", "us-west-2"},
+		{"--region=us-west-2"},
+	} {
+		if err := ValidateArgs(args); err == nil {
+			t.Errorf("ValidateArgs(%v) = nil, want error", args)
+		}
+	}
+}
+
 func TestSummarize(t *testing.T) {
 	results := []TargetResult{
 		{Status: StatusSuccess},

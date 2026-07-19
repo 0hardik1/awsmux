@@ -50,6 +50,10 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return Exitf(core.ExitConfigError, "--interactive requires a terminal on stdin")
 	}
 
+	if err := core.ValidateArgs(rest); err != nil {
+		return Exitf(core.ExitConfigError, "%s", err)
+	}
+
 	sel := runFlags.sel.selector()
 	// Never execute against unverified identities, whatever --preflight says.
 	sel.Preflight = true
@@ -59,6 +63,10 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 	if len(targets) == 0 {
 		return Exitf(core.ExitConfigError, "no targets matched the selection")
+	}
+	// A failed preflight blocks the run, it is not just informational.
+	if err := core.CheckVerified(targets); err != nil {
+		return Exitf(core.ExitConfigError, "%s (fix credentials or --exclude the profile)", err)
 	}
 
 	class := core.Classify(service, operation)

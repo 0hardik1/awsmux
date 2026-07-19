@@ -47,6 +47,34 @@ func SavePlan(p *Plan) error {
 	return nil
 }
 
+// ClaimPlan atomically claims a plan's single execution slot by creating
+// <Dir()>/plans/<id>.claim with O_EXCL, so "execute at most once" holds
+// across processes (two MCP servers, or MCP plus the CLI), not just within
+// one. The claim is one-shot and never released: like the PlanExecuted
+// status, even a failed run consumes the plan. planID must be the full
+// resolved ID (Plan.ID), never a user-supplied prefix.
+func ClaimPlan(planID, executionID string) error {
+	dir, err := Dir()
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(dir, "plans", planID+".claim")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("plan %s was already claimed for execution: each plan executes at most once", planID)
+		}
+		return fmt.Errorf("claim plan %s: %w", planID, err)
+	}
+	defer f.Close()
+	// The claim's existence is the lock; the content is for debugging only.
+	fmt.Fprintf(f, "%s %s\n", executionID, time.Now().UTC().Format(time.RFC3339))
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("claim plan %s: %w", planID, err)
+	}
+	return nil
+}
+
 // LoadPlan reads a plan by ID. A missing plan is an error that includes the
 // ID. Accept unambiguous ID prefixes (agents truncate IDs constantly).
 func LoadPlan(id string) (*Plan, error) {

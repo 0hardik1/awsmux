@@ -74,11 +74,13 @@ func runReplay(cmd *cobra.Command, args []string) error {
 		}
 		targets = append(targets, core.NewTarget(r.Target.Profile, r.Target.Region))
 	}
+	if err := core.ValidateArgs(old.Args); err != nil {
+		return Exitf(core.ExitConfigError, "stored execution args: %s", err)
+	}
 	targets = core.Preflight(cmd.Context(), targets)
-	for _, t := range targets {
-		if t.PreflightErr != "" {
-			fmt.Fprintf(os.Stderr, "awsmux: warning: %s: preflight failed: %s\n", t.ID, t.PreflightErr)
-		}
+	// A failed preflight blocks the replay, it is not just informational.
+	if err := core.CheckVerified(targets); err != nil {
+		return Exitf(core.ExitConfigError, "%s", err)
 	}
 
 	// A replay is a new execution: re-classify fresh and enforce the same

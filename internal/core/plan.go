@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -18,11 +19,19 @@ const DefaultPlanTTL = 1 * time.Hour
 // NewPlan builds a plan for service/operation over targets: classify the
 // operation, ask policy whether approval is required, set CreatedAt /
 // ExpiresAt (ttl <= 0 means DefaultPlanTTL), Status PlanPlanned, ID via
-// NewID("plan"), PolicyVersion, then Hash = ComputeHash(). Error when
-// targets is empty.
+// NewID("plan"), PolicyVersion, then Hash = ComputeHash(). Errors when
+// targets is empty, when any target lacks a verified identity (the hash
+// binds the accounts the plan was approved against, so an unverified target
+// would bind nothing), or when args contain reserved global options.
 func NewPlan(service, operation string, args []string, targets []Target, ttl time.Duration) (*Plan, error) {
 	if len(targets) == 0 {
 		return nil, errors.New("plan requires at least one target")
+	}
+	if err := CheckVerified(targets); err != nil {
+		return nil, fmt.Errorf("refusing to plan against unverified targets: %w", err)
+	}
+	if err := ValidateArgs(args); err != nil {
+		return nil, err
 	}
 	if ttl <= 0 {
 		ttl = DefaultPlanTTL

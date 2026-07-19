@@ -49,6 +49,10 @@ func NewApprovalToken(p *Plan) (string, error) {
 //   - Expired or cancelled or already executed: error.
 //   - Hash mismatch (p.ComputeHash() != p.Hash): error, the plan was
 //     tampered with after approval.
+//   - Args containing reserved global options (--profile/--region): error.
+//     NewPlan already rejects these; rechecking here covers plans stored
+//     before that rule existed, since the hash proves consistency, not
+//     provenance.
 //   - RequiresApproval and sha256(token) != ApprovalHash (or no approval
 //     ever minted): error. ReadOnly plans pass with an empty token.
 //
@@ -56,6 +60,9 @@ func NewApprovalToken(p *Plan) (string, error) {
 func CheckApproval(p *Plan, token string) error {
 	if p.Expired(time.Now()) {
 		return fmt.Errorf("plan %s expired at %s: create a new plan", p.ID, p.ExpiresAt.Format(time.RFC3339))
+	}
+	if err := ValidateArgs(p.Args); err != nil {
+		return fmt.Errorf("plan %s: %w", p.ID, err)
 	}
 	if p.Status == PlanCancelled {
 		return fmt.Errorf("plan %s was cancelled", p.ID)

@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -81,7 +82,7 @@ var tools = []toolDef{
 		InputSchema: schemaObject(map[string]any{
 			"plan_id":        schemaString("Id of the plan to execute."),
 			"approval_token": schemaString("Approval token printed by \"awsmux approve <plan-id>\". Required for any non-read_only plan."),
-			"concurrency":    schemaInt("Worker pool size. Defaults to 4."),
+			"concurrency":    schemaInt("Worker pool size. Defaults to 100 (one aws CLI subprocess per in-flight target); lower it on memory-constrained machines."),
 			"timeout_s":      schemaInt("Per-target timeout in seconds. 0 or omitted means no timeout."),
 			"max_errors":     schemaInt("Stop scheduling new targets after this many failures; remaining targets are skipped. 0 or omitted means no cap."),
 			"wait":           schemaBoolWithDefault("Wait for the run to finish and return the full execution. Set false to run in the background. Defaults to true.", true),
@@ -125,7 +126,14 @@ func findTool(name string) *toolDef {
 // --- JSON Schema helpers -------------------------------------------------
 
 func schemaObject(props map[string]any, required ...string) map[string]any {
-	s := map[string]any{"type": "object", "properties": props}
+	// additionalProperties false plus DisallowUnknownFields in unmarshalArgs:
+	// a typo like "profile" for "profiles" must be an error, not an empty
+	// selector that silently widens scope to every profile.
+	s := map[string]any{
+		"type":                 "object",
+		"properties":           props,
+		"additionalProperties": false,
+	}
 	if len(required) > 0 {
 		s["required"] = required
 	}
@@ -157,11 +165,15 @@ func schemaInt(desc string) map[string]any {
 }
 
 // unmarshalArgs decodes tools/call arguments; absent arguments mean {}.
+// Unknown fields are an error: on a tool whose empty selector means "all
+// profiles", a misspelled field name must not silently widen scope.
 func unmarshalArgs(raw json.RawMessage, v any) error {
 	if len(raw) == 0 {
 		return nil
 	}
-	if err := json.Unmarshal(raw, v); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
 		return fmt.Errorf("invalid arguments: %w", err)
 	}
 	return nil
@@ -304,19 +316,30 @@ func (s *server) executePlanTool(ctx context.Context, raw json.RawMessage) (any,
 		return nil, fmt.Errorf("plan_id is required")
 	}
 
-	// Load, gate, and mark executed under one lock: once the plan is saved
-	// as PlanExecuted no later (or concurrent) call can run it again.
-	s.execMu.Lock()
 	plan, err := core.LoadPlan(a.PlanID)
 	if err != nil {
-		s.execMu.Unlock()
 		return nil, fmt.Errorf("load plan: %w", err)
 	}
 	if err := core.CheckApproval(plan, a.ApprovalToken); err != nil {
-		s.execMu.Unlock()
 		return nil, fmt.Errorf("approval check failed: %w", err)
 	}
+	// Re-verify live identities before consuming the plan (STS may take a
+	// few seconds, so this runs outside execMu): approval bound specific
+	// accounts, and changed credentials must not redirect the run. Failing
+	// here leaves the plan unclaimed, so it can be retried once fixed.
+	if err := core.VerifyIdentities(ctx, plan.Targets); err != nil {
+		return nil, err
+	}
+
+	// Claim, mark executed, and save under one lock. The claim file is the
+	// cross-process "execute at most once" gate (another MCP server or the
+	// CLI cannot race it); execMu only serializes sibling handlers in here.
 	execID := core.NewID("exec")
+	s.execMu.Lock()
+	if err := core.ClaimPlan(plan.ID, execID); err != nil {
+		s.execMu.Unlock()
+		return nil, err
+	}
 	plan.Status = core.PlanExecuted
 	plan.ExecutionID = execID
 	if err := core.SavePlan(plan); err != nil {
