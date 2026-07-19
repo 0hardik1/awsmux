@@ -82,7 +82,9 @@ binds to that hash. Consequences:
 
 ## The executor
 
-A worker pool (default concurrency 4) fans the command out per target,
+A worker pool (default concurrency 100, sized for fleet-wide fan-out;
+each in-flight target is one aws CLI subprocess) fans the command out
+per target,
 with per-target timeouts, and classifies every failure into a stable
 taxonomy: `success`, `error`, `access_denied`, `credential_expired`,
 `timeout`, `skipped`. Fleet-level guardrails mirror AWS Systems Manager
@@ -98,14 +100,29 @@ bypass.
 
 ## Demo mode
 
-`awsmux demo <anything>` re-executes awsmux with three environment
-overrides: `AWSMUX_AWS_BIN` points at the hidden `fake-aws` emulator,
-`AWS_CONFIG_FILE` points at a generated config for a fictional
-13-profile fleet, and `AWSMUX_HOME` isolates plans and history under
-`~/.awsmux/demo`. The emulator serves deterministic canned responses
-(with synthetic latency and one planted access denial) for sts, ec2,
-lambda, eks, ecs, s3api, iam, and ssm, so the real engine, policy, and
-MCP server run byte-for-byte identical code offline.
+`awsmux demo <anything>` re-executes awsmux inside a sandbox: a
+generated `AWS_CONFIG_FILE` and credentials file describing a fictional
+100-account fleet (10 teams x prod/stage x 5 shards, 3 regions, plus
+one deliberate duplicate profile), and an `AWSMUX_HOME` under
+`~/.awsmux/demo` isolating plans and history per backend.
+
+Two backends:
+
+- **LocalStack (default).** The demo starts a pinned
+  `localstack/localstack:3.8` container (the last fully license-free
+  community line) and points every profile's `endpoint_url` at it. Each
+  profile's access key is its 12-digit account ID, which LocalStack
+  uses to namespace resources per account, so STS preflight verifies
+  real per-account identities and mutations genuinely persist. Setup
+  seeds a few storyline resources, most importantly the payments-prod-1
+  security group that is open to the world.
+- **Synthetic (`--synthetic`).** `AWSMUX_AWS_BIN` swaps the AWS CLI for
+  the hidden `fake-aws` emulator: deterministic canned responses with
+  synthetic latency, one planted access denial, and a small JMESPath
+  subset for `--query`. Zero dependencies, zero network.
+
+Either way the real engine, policy, and MCP server run byte-for-byte
+identical code.
 
 ## State
 

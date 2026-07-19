@@ -13,8 +13,11 @@ import (
 	"time"
 )
 
-// DefaultConcurrency is used when ExecOptions.Concurrency <= 0.
-const DefaultConcurrency = 4
+// DefaultConcurrency is used when ExecOptions.Concurrency <= 0. Fleet-wide
+// fan-out is the whole point, so the default is sized for ~100-account
+// estates; each in-flight target is one aws CLI subprocess, so dial it down
+// with --concurrency on memory-constrained machines.
+const DefaultConcurrency = 100
 
 // maxCapture caps stored stdout/stderr per target at 64 KiB.
 const maxCapture = 64 * 1024

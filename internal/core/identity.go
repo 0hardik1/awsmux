@@ -18,8 +18,9 @@ import (
 // IdentityCacheTTL bounds how long a preflight result is trusted.
 const IdentityCacheTTL = 5 * time.Minute
 
-// preflightConcurrency bounds concurrent STS calls during Preflight.
-const preflightConcurrency = 8
+// preflightConcurrency bounds concurrent STS calls during Preflight, sized
+// so a 100-profile fleet verifies in a few seconds.
+const preflightConcurrency = 32
 
 // Preflight verifies each target's identity concurrently (bounded at 8 in
 // flight) by shelling out to:

@@ -25,30 +25,48 @@ type demoAccount struct {
 	Region  string
 }
 
-var demoFleet = []demoAccount{
-	{"payments-prod", "111111111111", "payments", "prod", "us-east-1"},
-	{"payments-stage", "222222222222", "payments", "stage", "us-east-1"},
-	{"search-prod", "333333333333", "search", "prod", "us-east-1"},
-	{"search-stage", "444444444444", "search", "stage", "us-east-1"},
-	{"platform-prod", "555555555555", "platform", "prod", "us-east-1"},
-	{"platform-stage", "666666666666", "platform", "stage", "us-east-1"},
-	{"media-prod", "777777777777", "media", "prod", "us-west-2"},
-	{"media-stage", "888888888888", "media", "stage", "us-west-2"},
-	{"data-prod", "999999999999", "data", "prod", "us-east-1"},
-	{"data-stage", "121212121212", "data", "stage", "us-east-1"},
-	{"security-audit", "131313131313", "security", "audit", "us-east-1"},
-	{"sandbox", "141414141414", "sandbox", "dev", "us-west-2"},
-	// Deliberate duplicate of platform-prod so --dedupe has something to find.
-	{"admin-legacy", "555555555555", "platform", "prod", "us-east-1"},
+var demoTeams = []string{"payments", "search", "platform", "media", "data",
+	"ml", "infra", "billing", "identity", "edge"}
+
+var demoFleetRegions = []string{"us-east-1", "us-west-2", "eu-west-1"}
+
+// demoFleet is 100 accounts (10 teams x prod/stage x 5 shards) plus one
+// deliberate duplicate profile so --dedupe has something to find. Account
+// IDs are stable: 200000000000 + index. In LocalStack mode each ID doubles
+// as the profile's access key, which namespaces resources per account.
+var demoFleet = buildDemoFleet()
+
+func buildDemoFleet() []demoAccount {
+	fleet := make([]demoAccount, 0, 101)
+	for _, team := range demoTeams {
+		for _, env := range []string{"prod", "stage"} {
+			for shard := 1; shard <= 5; shard++ {
+				fleet = append(fleet, demoAccount{
+					Profile: fmt.Sprintf("%s-%s-%d", team, env, shard),
+					Account: fmt.Sprintf("%012d", 200000000000+len(fleet)),
+					Team:    team,
+					Env:     env,
+					Region:  demoFleetRegions[len(fleet)%len(demoFleetRegions)],
+				})
+			}
+		}
+	}
+	dup := *demoByProfileIn(fleet, "platform-prod-1")
+	dup.Profile = "admin-legacy"
+	return append(fleet, dup)
 }
 
-func demoByProfile(profile string) *demoAccount {
-	for i := range demoFleet {
-		if demoFleet[i].Profile == profile {
-			return &demoFleet[i]
+func demoByProfileIn(fleet []demoAccount, profile string) *demoAccount {
+	for i := range fleet {
+		if fleet[i].Profile == profile {
+			return &fleet[i]
 		}
 	}
 	return nil
+}
+
+func demoByProfile(profile string) *demoAccount {
+	return demoByProfileIn(demoFleet, profile)
 }
 
 func (a *demoAccount) roleARN() string {
@@ -116,9 +134,9 @@ func runFakeAWS(cmd *cobra.Command, args []string) error {
 	// Deterministic per-call latency so the demo feels like a real fleet.
 	time.Sleep(time.Duration(120+hash32(profile+service+operation)%330) * time.Millisecond)
 
-	// The one planted failure: data-prod denies Lambda reads, so the demo
-	// always has an access_denied row to show the failure taxonomy.
-	if profile == "data-prod" && service == "lambda" {
+	// The one planted failure: data-prod-1 denies Lambda reads, so the
+	// synthetic demo always has an access_denied row to show the taxonomy.
+	if profile == "data-prod-1" && service == "lambda" {
 		fmt.Fprintf(os.Stderr,
 			"An error occurred (AccessDeniedException) when calling the ListFunctions operation: "+
 				"User: %s is not authorized to perform: lambda:ListFunctions on resource: * "+
@@ -175,7 +193,7 @@ func fakeResponse(a *demoAccount, region, service, operation, joined string) any
 		// bastion group open to the world. Filtered queries find exactly it.
 		filtered := strings.Contains(joined, "--filters") || strings.Contains(joined, "0.0.0.0/0")
 		groups := []any{}
-		if a.Profile == "payments-prod" && region == "us-east-1" {
+		if a.Profile == "payments-prod-1" {
 			groups = append(groups, map[string]any{
 				"GroupId":   "sg-0a1b2c3d",
 				"GroupName": "legacy-bastion",
@@ -228,9 +246,6 @@ func fakeResponse(a *demoAccount, region, service, operation, joined string) any
 			map[string]string{"Name": fmt.Sprintf("%s-%s-logs", a.Team, a.Env), "CreationDate": "2024-03-11T00:00:00Z"},
 		}}
 	case "iam list-users":
-		if a.Env == "audit" {
-			return map[string]any{"Users": []any{}}
-		}
 		return map[string]any{"Users": []any{
 			map[string]string{"UserName": "deploy-bot", "CreateDate": "2023-08-01T00:00:00Z"},
 		}}

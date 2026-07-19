@@ -1,30 +1,44 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"awsmux/internal/core"
 )
 
-// `awsmux demo` wraps any awsmux command in a sandboxed, fully offline
-// environment: a fictional 13-profile fleet served by the hidden fake-aws
-// emulator, with its own AWS config and its own state directory. Nothing
-// touches real AWS, real credentials, or real awsmux history.
+// `awsmux demo` wraps any awsmux command in a sandboxed 100-account fleet.
+// By default the fleet is backed by LocalStack in Docker: the real aws CLI
+// talks to a real (emulated) AWS API on localhost, every profile is its own
+// account, and mutations genuinely persist. `--synthetic` swaps in the
+// hidden fake-aws emulator instead: no Docker, no network, canned data.
+// Either way, nothing touches real AWS, real credentials, or real history.
+
+const (
+	// Pinned to the last fully license-free community line; newer
+	// localstack/localstack images exit without a LOCALSTACK_AUTH_TOKEN.
+	localstackImage     = "localstack/localstack:3.8"
+	localstackContainer = "awsmux-localstack"
+	localstackEndpoint  = "http://localhost:4566"
+)
 
 var demoCmd = &cobra.Command{
-	Use:   "demo [any awsmux command...]",
-	Short: "Try every awsmux feature against a fake 12-account fleet, no AWS needed",
-	Long: "Runs the given awsmux command against a fictional fleet (payments, search,\n" +
-		"platform, media, data, security, sandbox; prod and stage). Zero AWS setup,\n" +
-		"zero credentials, zero network calls, zero risk. State lives in\n" +
-		"~/.awsmux/demo; delete that directory to reset the playground.",
+	Use:   "demo [--synthetic] [any awsmux command...]",
+	Short: "Try every awsmux feature against a sandboxed 100-account fleet",
+	Long: "Runs the given awsmux command against a fictional 100-account fleet\n" +
+		"(10 teams, prod and stage, 5 shards each, 3 regions). Default backend is\n" +
+		"LocalStack in Docker, so mutations really persist per account; pass\n" +
+		"--synthetic for a canned, no-Docker fleet. State lives in ~/.awsmux/demo;\n" +
+		"delete that directory (and `docker rm -f awsmux-localstack`) to reset.",
 	DisableFlagParsing: true,
 	RunE:               runDemo,
 }
@@ -34,6 +48,11 @@ func init() {
 }
 
 func runDemo(cmd *cobra.Command, args []string) error {
+	synthetic := false
+	if len(args) > 0 && args[0] == "--synthetic" {
+		synthetic = true
+		args = args[1:]
+	}
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
 		printDemoTour(cmd.OutOrStdout())
 		return nil
@@ -51,16 +70,33 @@ func runDemo(cmd *cobra.Command, args []string) error {
 		return Exitf(core.ExitConfigError, "locate awsmux binary: %s", err)
 	}
 
+	// Each backend gets its own state home: identities, plans, and history
+	// are not interchangeable between LocalStack and the synthetic fleet.
+	stateHome := filepath.Join(base, "home")
+	if synthetic {
+		stateHome = filepath.Join(base, "home-synthetic")
+	}
+	env := []string{
+		"AWS_CONFIG_FILE=" + filepath.Join(base, "aws-config"),
+		"AWS_SHARED_CREDENTIALS_FILE=" + filepath.Join(base, "aws-credentials"),
+		"AWSMUX_HOME=" + stateHome,
+	}
+	if synthetic {
+		env = append(env, core.AWSBinEnv+"="+exe+" fake-aws")
+	} else {
+		if err := ensureLocalStack(cmd.Context()); err != nil {
+			return Exitf(core.ExitConfigError, "%s", err)
+		}
+		if err := seedLocalStack(cmd.Context(), base, env); err != nil {
+			fmt.Fprintf(os.Stderr, "awsmux demo: warning: seeding: %s\n", err)
+		}
+	}
+
 	child := exec.CommandContext(cmd.Context(), exe, args...)
 	child.Stdin = os.Stdin
 	child.Stdout = os.Stdout
 	child.Stderr = os.Stderr
-	child.Env = append(os.Environ(),
-		core.AWSBinEnv+"="+exe+" fake-aws",
-		"AWS_CONFIG_FILE="+filepath.Join(base, "aws-config"),
-		"AWS_SHARED_CREDENTIALS_FILE="+filepath.Join(base, "aws-credentials"),
-		"AWSMUX_HOME="+filepath.Join(base, "home"),
-	)
+	child.Env = append(os.Environ(), env...)
 	if err := child.Run(); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
@@ -71,8 +107,11 @@ func runDemo(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// demoSetup writes the sandbox: a fake AWS config listing the fleet, an empty
-// credentials file, and a dedicated state home.
+// demoSetup writes the sandbox: an AWS config and credentials file for the
+// generated fleet, and a dedicated state home. In LocalStack mode each
+// profile's access key is its 12-digit account ID, which is how LocalStack
+// namespaces resources per account; endpoint_url points the real aws CLI at
+// the emulator (the synthetic backend simply never reads it).
 func demoSetup() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -82,47 +121,143 @@ func demoSetup() (string, error) {
 	if err := os.MkdirAll(filepath.Join(base, "home"), 0o700); err != nil {
 		return "", err
 	}
-	var cfg strings.Builder
+	var cfg, creds strings.Builder
 	cfg.WriteString("# Generated by `awsmux demo`. This fleet is fictional.\n")
 	for _, a := range demoFleet {
-		fmt.Fprintf(&cfg, "[profile %s]\nregion = %s\n\n", a.Profile, a.Region)
+		fmt.Fprintf(&cfg, "[profile %s]\nregion = %s\nendpoint_url = %s\n\n",
+			a.Profile, a.Region, localstackEndpoint)
+		fmt.Fprintf(&creds, "[%s]\naws_access_key_id = %s\naws_secret_access_key = test\n\n",
+			a.Profile, a.Account)
 	}
 	if err := os.WriteFile(filepath.Join(base, "aws-config"), []byte(cfg.String()), 0o600); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(filepath.Join(base, "aws-credentials"), []byte("# empty on purpose\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(base, "aws-credentials"), []byte(creds.String()), 0o600); err != nil {
 		return "", err
 	}
 	return base, nil
 }
 
-func printDemoTour(w interface{ Write([]byte) (int, error) }) {
-	fmt.Fprint(w, `awsmux demo: a fake 12-account fleet you can break for fun.
+// ensureLocalStack makes sure the pinned LocalStack container is running and
+// healthy, starting it (and pulling the image on first use) if needed.
+func ensureLocalStack(ctx context.Context) error {
+	if err := exec.CommandContext(ctx, "docker", "info").Run(); err != nil {
+		return fmt.Errorf("docker is not available; start Docker, or use `awsmux demo --synthetic ...` for the no-Docker fleet")
+	}
+	out, _ := exec.CommandContext(ctx, "docker", "inspect", "-f", "{{.State.Running}}", localstackContainer).Output()
+	if strings.TrimSpace(string(out)) != "true" {
+		_ = exec.CommandContext(ctx, "docker", "rm", "-f", localstackContainer).Run()
+		fmt.Fprintf(os.Stderr, "awsmux demo: starting LocalStack (%s); the first run pulls the image...\n", localstackImage)
+		if out, err := exec.CommandContext(ctx, "docker", "run", "-d",
+			"--name", localstackContainer, "-p", "4566:4566", localstackImage).CombinedOutput(); err != nil {
+			return fmt.Errorf("start LocalStack: %s", strings.TrimSpace(string(out)))
+		}
+	}
+	deadline := time.Now().Add(3 * time.Minute)
+	for time.Now().Before(deadline) {
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, localstackEndpoint+"/_localstack/health", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
+	return errors.New("LocalStack did not become healthy in 3 minutes; check `docker logs awsmux-localstack`")
+}
 
-No AWS account, credentials, or network needed. Prefix any awsmux command
-with "demo" and it runs against fictional payments/search/platform/media/
-data teams (prod + stage), a security-audit account, and a sandbox.
+// seedLocalStack plants a few storyline resources once per sandbox, most
+// importantly the payments-prod-1 security group that is open to the world.
+func seedLocalStack(ctx context.Context, base string, env []string) error {
+	marker := filepath.Join(base, ".seeded")
+	if _, err := os.Stat(marker); err == nil {
+		return nil
+	}
+	fmt.Fprintln(os.Stderr, "awsmux demo: seeding storyline resources (one time)...")
+	calls := []struct {
+		profile string
+		argv    []string
+	}{
+		{"payments-prod-1", []string{"ec2", "create-security-group",
+			"--group-name", "legacy-bastion", "--description", "demo: accidentally open to the world"}},
+		{"payments-prod-1", []string{"ec2", "authorize-security-group-ingress",
+			"--group-name", "legacy-bastion", "--protocol", "tcp", "--port", "22", "--cidr", "0.0.0.0/0"}},
+		{"payments-prod-1", []string{"ssm", "put-parameter", "--name", "/payments/deploy-ring",
+			"--value", "ring-2", "--type", "String", "--overwrite"}},
+		{"billing-prod-1", s3CreateBucketArgs("billing-prod-1", "billing-prod-1-invoices")},
+		{"platform-prod-1", []string{"ssm", "put-parameter", "--name", "/platform/feature-flags",
+			"--value", "canary=on", "--type", "String", "--overwrite"}},
+	}
+	var firstErr error
+	for _, c := range calls {
+		argv := append([]string{"--profile", c.profile, "--output", "json"}, c.argv...)
+		cmd := exec.CommandContext(ctx, "aws", argv...)
+		cmd.Env = append(os.Environ(), env...)
+		if out, err := cmd.CombinedOutput(); err != nil && firstErr == nil {
+			msg := strings.TrimSpace(string(out))
+			// A reseed against a still-running LocalStack finds the
+			// storyline resources already in place; that is success.
+			if strings.Contains(msg, "Duplicate") || strings.Contains(msg, "AlreadyExists") ||
+				strings.Contains(msg, "already exists") || strings.Contains(msg, "AlreadyOwnedByYou") {
+				continue
+			}
+			firstErr = fmt.Errorf("aws %s (%s): %s", strings.Join(c.argv[:2], " "), c.profile, msg)
+		}
+	}
+	if err := os.WriteFile(marker, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o600); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
+}
+
+// s3CreateBucketArgs handles the S3 quirk that any region except us-east-1
+// must state a LocationConstraint.
+func s3CreateBucketArgs(profile, bucket string) []string {
+	argv := []string{"s3api", "create-bucket", "--bucket", bucket}
+	if a := demoByProfile(profile); a != nil && a.Region != "us-east-1" {
+		argv = append(argv, "--create-bucket-configuration", "LocationConstraint="+a.Region)
+	}
+	return argv
+}
+
+func printDemoTour(w interface{ Write([]byte) (int, error) }) {
+	fmt.Fprint(w, `awsmux demo: a 100-account fleet you can break for fun.
+
+Default backend is LocalStack (Docker): the real aws CLI talks to a real
+emulated AWS on localhost, every profile is its own account, and what you
+mutate actually persists. No Docker? Add --synthetic for a canned fleet
+with zero dependencies. Neither touches real AWS or real credentials.
 
 Start here:
 
-  awsmux demo targets
-      Discover the fleet; every identity is "verified" against a fake STS.
+  awsmux demo targets --profiles 'payments-*'
+      Discover part of the fleet; identities verified via (emulated) STS.
+      Drop the filter to see all 100 accounts, or add --dedupe to catch
+      the planted duplicate profile.
 
-  awsmux demo run -- ec2 describe-instances --query 'Reservations[].Instances[].InstanceId'
-      One command, whole fleet, merged results.
+  awsmux demo run --format jsonl -- ec2 describe-vpcs --query 'Vpcs[].VpcId'
+      One command, 100 accounts, merged JSONL in seconds (default
+      concurrency is 100).
 
-  awsmux demo run --format jsonl -- lambda list-functions
-      Structured JSONL per account. One account is access-denied on
-      purpose so you can see the failure taxonomy.
-
-  awsmux demo run --profiles 'payments-*' -- ec2 describe-security-groups --filters Name=ip-permission.cidr,Values=0.0.0.0/0
+  awsmux demo run --profiles '*-prod-*' -- ec2 describe-security-groups --filters Name=ip-permission.cidr,Values=0.0.0.0/0
       Find the security group somebody opened to the world.
 
-  awsmux demo plan -- ec2 revoke-security-group-ingress --group-id sg-0a1b2c3d --protocol tcp --port 22 --cidr 0.0.0.0/0
+  awsmux demo plan --profiles payments-prod-1 -- ec2 revoke-security-group-ingress --group-name legacy-bastion --protocol tcp --port 22 --cidr 0.0.0.0/0
       Destructive, so it will not just run: you get an immutable plan.
-      Approve it (awsmux demo approve <plan-id>), then apply with the
-      token. Try editing ~/.awsmux/demo/home/plans/<id>.json between
-      approve and apply and watch the hash check refuse it.
+      Approve it (awsmux demo approve <plan-id>), apply with the token,
+      then re-run the hunt above and watch the finding disappear for
+      real. Try editing ~/.awsmux/demo/home/plans/<id>.json between
+      approve and apply: the hash check refuses it.
+
+  awsmux demo --synthetic run --format jsonl -- lambda list-functions
+      The synthetic fleet has one account access-denied on purpose, so
+      you can see the failure taxonomy without IAM setup.
 
   awsmux demo history
       Every run is remembered. Try "awsmux demo replay <exec-id>" too.
@@ -130,6 +265,6 @@ Start here:
 Agents: "awsmux demo mcp" serves the full MCP interface against the fake
 fleet, so you can wire an AI agent to it with zero blast radius.
 
-Reset anytime: rm -rf ~/.awsmux/demo
+Reset: rm -rf ~/.awsmux/demo && docker rm -f awsmux-localstack
 `)
 }

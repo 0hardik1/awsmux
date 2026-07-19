@@ -13,26 +13,35 @@ anything runs, results merged into one stream. Anything that mutates is
 stopped by an approval boundary that even an AI agent with your admin
 credentials cannot talk its way past.
 
-## Try it in 60 seconds (no AWS account needed)
+## Try it on 100 accounts (none of them real)
 
 ```sh
 go build -o awsmux . && ./awsmux demo
 ```
 
-`awsmux demo` gives you a fictional 12-account fleet (payments, search,
-platform, media, data, prod and stage) to break for fun. Zero
-credentials, zero network calls, zero risk:
+`awsmux demo` gives you a fictional 100-account fleet (10 teams, prod
+and stage, 5 shards, 3 regions) to break for fun. With Docker present
+it runs on LocalStack: the real aws CLI talks to a real emulated AWS on
+localhost, every profile is its own account, and what you change
+actually persists. No Docker? Add `--synthetic` for a canned fleet with
+zero dependencies. Either way: zero credentials, zero real AWS, zero
+risk.
 
 ```sh
-awsmux demo targets                                    # discover the fleet
-awsmux demo run --format jsonl -- lambda list-functions   # one account is denied, on purpose
-awsmux demo plan -- ec2 revoke-security-group-ingress \
-  --group-id sg-0a1b2c3d --protocol tcp --port 22 --cidr 0.0.0.0/0
+awsmux demo targets --profiles 'payments-*'      # verified identities, per account
+awsmux demo run --dedupe --format jsonl -- ec2 describe-vpcs --query 'Vpcs[].VpcId'
+                                                 # all 100 accounts in a few seconds
+awsmux demo run --profiles '*-prod-*' -- ec2 describe-security-groups \
+  --filters Name=ip-permission.cidr,Values=0.0.0.0/0   # find the world-open group
+awsmux demo plan --profiles payments-prod-1 -- ec2 revoke-security-group-ingress \
+  --group-name legacy-bastion --protocol tcp --port 22 --cidr 0.0.0.0/0
 ```
 
-That last one is destructive, so it will not just run. You get an
-immutable plan to approve first. Try editing the plan file between
-approve and apply and watch the hash check refuse it.
+That last one is destructive, so it will not just run: you get an
+immutable plan to approve first. Apply it with the token and re-run the
+hunt; the finding disappears for real, because the sandbox is a real
+(emulated) AWS. Try editing the plan file between approve and apply and
+watch the hash check refuse it.
 
 ## Real fleet
 
@@ -51,7 +60,9 @@ awsmux approve plan-01k...          # prints a one-time token, never stored
 awsmux apply plan-01k... --approval-token <token>
 ```
 
-Useful flags: `--concurrency`, `--timeout 30s`, `--max-errors N`,
+Useful flags: `--concurrency` (default 100: fleet-wide fan-out is the
+point; each in-flight target is one aws CLI subprocess), `--timeout
+30s`, `--max-errors N`,
 `--stop-on-access-denied`, `--dedupe` (collapse profiles that resolve to
 the same account), `--output-dir` (one result file per target),
 `--interactive` (checkbox target picker). Every run lands in
@@ -70,7 +81,7 @@ freely. Anything else refuses until a human runs `awsmux approve` and
 hands over the token, which binds to the plan's sha256 hash, so the
 agent cannot alter an approved plan or execute it twice. Want to watch
 an agent hit the boundary with zero blast radius? `awsmux demo mcp`
-serves the fake fleet over MCP.
+serves the 100-account sandbox fleet over MCP.
 
 It is also measurably cheaper. Two identical agents did the same
 three-region task, one with the raw aws CLI and one with awsmux:
@@ -118,7 +129,7 @@ You can replay this exact story offline right now: `awsmux demo`.
 | STS identity preflight per target | yes | no | n/a |
 | Risk classification + approval boundary | yes | prompt only | n/a |
 | Agent interface (MCP) | yes | no | no |
-| Offline demo mode | yes | no | no |
+| 100-account sandbox (LocalStack or synthetic) | yes | no | no |
 | History + replay | yes | no | no |
 | Runtime | single Go binary | Python + plugins | Go / varies |
 
