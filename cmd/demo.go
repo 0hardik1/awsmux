@@ -84,10 +84,11 @@ func runDemo(cmd *cobra.Command, args []string) error {
 	if synthetic {
 		env = append(env, core.AWSBinEnv+"="+exe+" fake-aws")
 	} else {
-		if err := ensureLocalStack(cmd.Context()); err != nil {
+		cid, err := ensureLocalStack(cmd.Context())
+		if err != nil {
 			return Exitf(core.ExitConfigError, "%s", err)
 		}
-		if err := seedLocalStack(cmd.Context(), base, env); err != nil {
+		if err := seedLocalStack(cmd.Context(), base, env, cid); err != nil {
 			fmt.Fprintf(os.Stderr, "awsmux demo: warning: seeding: %s\n", err)
 		}
 	}
@@ -139,10 +140,12 @@ func demoSetup() (string, error) {
 }
 
 // ensureLocalStack makes sure the pinned LocalStack container is running and
-// healthy, starting it (and pulling the image on first use) if needed.
-func ensureLocalStack(ctx context.Context) error {
+// healthy, starting it (and pulling the image on first use) if needed, and
+// returns the running container's id so seeding can tell a fresh container
+// from the one it already planted resources in.
+func ensureLocalStack(ctx context.Context) (string, error) {
 	if err := exec.CommandContext(ctx, "docker", "info").Run(); err != nil {
-		return fmt.Errorf("docker is not available; start Docker, or use `awsmux demo --synthetic ...` for the no-Docker fleet")
+		return "", fmt.Errorf("docker is not available; start Docker, or use `awsmux demo --synthetic ...` for the no-Docker fleet")
 	}
 	out, _ := exec.CommandContext(ctx, "docker", "inspect", "-f", "{{.State.Running}}", localstackContainer).Output()
 	if strings.TrimSpace(string(out)) != "true" {
@@ -150,7 +153,7 @@ func ensureLocalStack(ctx context.Context) error {
 		fmt.Fprintf(os.Stderr, "awsmux demo: starting LocalStack (%s); the first run pulls the image...\n", localstackImage)
 		if out, err := exec.CommandContext(ctx, "docker", "run", "-d",
 			"--name", localstackContainer, "-p", "4566:4566", localstackImage).CombinedOutput(); err != nil {
-			return fmt.Errorf("start LocalStack: %s", strings.TrimSpace(string(out)))
+			return "", fmt.Errorf("start LocalStack: %s", strings.TrimSpace(string(out)))
 		}
 	}
 	deadline := time.Now().Add(3 * time.Minute)
@@ -160,23 +163,29 @@ func ensureLocalStack(ctx context.Context) error {
 		if err == nil {
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
-				return nil
+				id, err := exec.CommandContext(ctx, "docker", "inspect", "-f", "{{.Id}}", localstackContainer).Output()
+				if err != nil {
+					return "", fmt.Errorf("inspect LocalStack container: %w", err)
+				}
+				return strings.TrimSpace(string(id)), nil
 			}
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return "", ctx.Err()
 		case <-time.After(time.Second):
 		}
 	}
-	return errors.New("LocalStack did not become healthy in 3 minutes; check `docker logs awsmux-localstack`")
+	return "", errors.New("LocalStack did not become healthy in 3 minutes; check `docker logs awsmux-localstack`")
 }
 
-// seedLocalStack plants a few storyline resources once per sandbox, most
+// seedLocalStack plants a few storyline resources once per container, most
 // importantly the payments-prod-1 security group that is open to the world.
-func seedLocalStack(ctx context.Context, base string, env []string) error {
+// The marker records which container was seeded: a recreated container comes
+// up empty, so a stale marker must trigger a reseed, not skip it.
+func seedLocalStack(ctx context.Context, base string, env []string, containerID string) error {
 	marker := filepath.Join(base, ".seeded")
-	if _, err := os.Stat(marker); err == nil {
+	if prev, err := os.ReadFile(marker); err == nil && strings.TrimSpace(string(prev)) == containerID {
 		return nil
 	}
 	fmt.Fprintln(os.Stderr, "awsmux demo: seeding storyline resources (one time)...")
@@ -210,7 +219,7 @@ func seedLocalStack(ctx context.Context, base string, env []string) error {
 			firstErr = fmt.Errorf("aws %s (%s): %s", strings.Join(c.argv[:2], " "), c.profile, msg)
 		}
 	}
-	if err := os.WriteFile(marker, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o600); err != nil && firstErr == nil {
+	if err := os.WriteFile(marker, []byte(containerID+"\n"), 0o600); err != nil && firstErr == nil {
 		firstErr = err
 	}
 	return firstErr

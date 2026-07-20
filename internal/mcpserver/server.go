@@ -10,26 +10,33 @@
 //     notifications are silently dropped.
 //   - initialize: echo the client's protocolVersion, capabilities
 //     {"tools":{}}, serverInfo {"name":"awsmux","version":Version}.
-//   - tools/call result: {"content":[{"type":"text","text":<pretty JSON
+//   - tools/call result: {"content":[{"type":"text","text":<compact JSON
 //     payload>}],"isError":false}. Domain failures (bad selector, approval
 //     missing) return isError true with a JSON {"error": ...} payload, NOT
 //     a JSON-RPC error; protocol errors use JSON-RPC errors.
 //   - Log to stderr only; stdout carries protocol frames exclusively.
+//   - Result shaping (compact rosters, grouped execution results, size
+//     budget and paging) lives in results.go; tool results are read by a
+//     model, so every payload is built for token economy.
 //
 // Tools (schemas in tools.go):
 //
 //	list_aws_targets   {profiles?, exclude?, regions?, preflight?=true,
-//	                    dedupe?} -> {targets:[...], count}
+//	                    dedupe?} -> {count, format, targets:[compact lines]}
 //	plan_aws_operation {service, operation, args?, profiles?, exclude?,
 //	                    regions?, dedupe?, target_ids?} ->
-//	                    the plan (id, classification, requires_approval,
-//	                    target_count, hash, expires_at, approval_hint)
+//	                    slim plan echo (id, classification,
+//	                    requires_approval, target_count, targets_preview,
+//	                    hash, expires_at, approval_hint)
 //	execute_aws_plan   {plan_id, approval_token?, concurrency?, timeout_s?,
 //	                    max_errors?, wait?=true} ->
-//	                    wait: the full execution with summary;
+//	                    wait: summary + results grouped by identical
+//	                    outcome, truncated with paging when oversized;
 //	                    else {execution_id, status:"running"}
-//	get_aws_execution  {execution_id} -> execution (running ones come from
-//	                    the in-process registry, finished from the store)
+//	get_aws_execution  {execution_id, offset?, limit?} -> like
+//	                    execute_aws_plan's wait result; offset/limit page
+//	                    plain per-target rows (running ones come from the
+//	                    in-process registry, finished from the store)
 //	cancel_aws_execution {execution_id} -> {cancelled: bool}
 //
 // Rules the implementation must enforce:
@@ -220,29 +227,30 @@ func (s *server) handleToolsCall(ctx context.Context, id, params json.RawMessage
 	s.reply(id, res)
 }
 
-// toolSuccessResult wraps a payload in the MCP content envelope, with
-// structuredContent mirroring the JSON for modern clients.
+// toolSuccessResult wraps a payload in the MCP content envelope. The text is
+// compact JSON and there is deliberately no structuredContent mirror: the
+// consumer is a model that pays per token, and text-only keeps awsmux in
+// control of exactly what enters its context.
 func toolSuccessResult(payload any) (map[string]any, error) {
-	pretty, err := json.MarshalIndent(payload, "", "  ")
+	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("encode tool result: %w", err)
 	}
 	return map[string]any{
-		"content":           []map[string]any{{"type": "text", "text": string(pretty)}},
-		"structuredContent": payload,
-		"isError":           false,
+		"content": []map[string]any{{"type": "text", "text": string(encoded)}},
+		"isError": false,
 	}, nil
 }
 
 // toolErrorResult wraps a domain error as an isError tool result, not a
 // JSON-RPC error, so the agent sees and can react to it.
 func toolErrorResult(err error) map[string]any {
-	pretty, merr := json.MarshalIndent(map[string]string{"error": err.Error()}, "", "  ")
+	encoded, merr := json.Marshal(map[string]string{"error": err.Error()})
 	if merr != nil {
-		pretty = []byte(`{"error":"internal encoding failure"}`)
+		encoded = []byte(`{"error":"internal encoding failure"}`)
 	}
 	return map[string]any{
-		"content": []map[string]any{{"type": "text", "text": string(pretty)}},
+		"content": []map[string]any{{"type": "text", "text": string(encoded)}},
 		"isError": true,
 	}
 }
