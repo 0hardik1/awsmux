@@ -55,11 +55,16 @@ var tools = []toolDef{
 			"you cannot execute the plan yourself: a human must run " +
 			"\"awsmux approve <plan-id>\" in their terminal and hand you the printed " +
 			"approval token, which you then pass to execute_aws_plan. read_only plans " +
-			"execute directly with no token. Plans expire one hour after creation.",
+			"execute directly with no token. Plans expire one hour after creation. " +
+			"For read operations, ALWAYS put a server-side projection in args, e.g. " +
+			"[\"--query\", \"Vpcs[].VpcId\"], plus --filters where the service supports " +
+			"them: it shrinks every per-target result to just the fields you need, " +
+			"keeps the execution response small enough to return whole, and on large " +
+			"fleets is the difference between one round trip and many.",
 		InputSchema: schemaObject(map[string]any{
 			"service":    schemaString("AWS CLI service, e.g. \"ec2\" or \"s3api\"."),
 			"operation":  schemaString("AWS CLI operation, e.g. \"describe-instances\"."),
-			"args":       schemaStringArray("Extra AWS CLI arguments appended after the operation, e.g. [\"--instance-ids\", \"i-123\"]."),
+			"args":       schemaStringArray("Extra AWS CLI arguments appended after the operation. For reads, include a JMESPath projection, e.g. [\"--query\", \"Vpcs[].VpcId\"]; unprojected outputs on large fleets get truncated and cost extra round trips."),
 			"profiles":   schemaStringArray("Shell-style globs selecting profiles. Empty means all profiles."),
 			"exclude":    schemaStringArray("Shell-style globs removing profiles after inclusion."),
 			"regions":    schemaStringArray("Regions to expand each profile into. Empty means each profile's default region."),
@@ -76,9 +81,12 @@ var tools = []toolDef{
 			"human running \"awsmux approve <plan-id>\"; there is no bypass, so if you " +
 			"have no token, ask the human to approve first. read_only plans need no " +
 			"token. With wait true (the default) this blocks and returns the finished " +
-			"execution with per-target results and a summary; with wait false it " +
-			"returns an execution_id immediately, then poll get_aws_execution and use " +
-			"cancel_aws_execution to stop it.",
+			"execution: a summary plus results grouped by identical outcome, so a " +
+			"fleet-wide check where most targets agree comes back tiny. Oversized " +
+			"results are truncated with a next_offset for paging via " +
+			"get_aws_execution. With wait false it returns an execution_id " +
+			"immediately; poll get_aws_execution and use cancel_aws_execution to " +
+			"stop it.",
 		InputSchema: schemaObject(map[string]any{
 			"plan_id":        schemaString("Id of the plan to execute."),
 			"approval_token": schemaString("Approval token printed by \"awsmux approve <plan-id>\". Required for any non-read_only plan."),
@@ -93,11 +101,14 @@ var tools = []toolDef{
 		Name: "get_aws_execution",
 		Description: "Fetch one execution by id. A still-running background execution " +
 			"(started via execute_aws_plan with wait false) reports status \"running\" " +
-			"with a count of targets completed so far; a finished execution returns the " +
-			"full persisted record with per-target results and a summary. Also works " +
-			"for any past execution in history.",
+			"with a count of targets completed so far; a finished execution returns " +
+			"grouped results and a summary, like execute_aws_plan. Pass offset (and " +
+			"optionally limit) to page through per-target rows of a large result " +
+			"instead. Also works for any past execution in history.",
 		InputSchema: schemaObject(map[string]any{
 			"execution_id": schemaString("Id of the execution to fetch."),
+			"offset":       schemaInt("Return plain per-target rows starting at this index (plan target order) instead of grouped results."),
+			"limit":        schemaInt("Maximum rows to return with offset paging. Omitted or 0 means as many as fit."),
 		}, "execution_id"),
 		handler: (*server).getExecutionTool,
 	},
@@ -202,7 +213,7 @@ func (s *server) listTargetsTool(ctx context.Context, raw json.RawMessage) (any,
 	if err != nil {
 		return nil, fmt.Errorf("resolve targets: %w", err)
 	}
-	return map[string]any{"count": len(targets), "targets": targets}, nil
+	return compactTargets(targets), nil
 }
 
 func (s *server) planOperationTool(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -270,34 +281,14 @@ func filterByID(targets []core.Target, want []string) ([]core.Target, error) {
 		for _, t := range targets {
 			valid = append(valid, t.ID)
 		}
+		if extra := len(valid) - 10; extra > 0 {
+			valid = append(valid[:10], fmt.Sprintf("... (%d more)", extra))
+		}
 		unknown := slices.Sorted(maps.Keys(wanted))
 		return nil, fmt.Errorf("unknown target ids: %s (valid ids: %s)",
 			strings.Join(unknown, ", "), strings.Join(valid, ", "))
 	}
 	return filtered, nil
-}
-
-// planResponse is the full plan minus approval_hash, plus target_count and
-// an approval_hint telling the agent what has to happen next.
-func planResponse(p *core.Plan) (map[string]any, error) {
-	encoded, err := json.Marshal(p)
-	if err != nil {
-		return nil, fmt.Errorf("encode plan: %w", err)
-	}
-	var m map[string]any
-	if err := json.Unmarshal(encoded, &m); err != nil {
-		return nil, fmt.Errorf("decode plan: %w", err)
-	}
-	delete(m, "approval_hash")
-	m["target_count"] = len(p.Targets)
-	if p.RequiresApproval {
-		m["approval_hint"] = fmt.Sprintf(
-			"approval required: ask a human to run \"awsmux approve %s\" in their terminal and give you the printed token, then pass it as approval_token to execute_aws_plan",
-			p.ID)
-	} else {
-		m["approval_hint"] = "no approval needed"
-	}
-	return m, nil
 }
 
 func (s *server) executePlanTool(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -360,7 +351,7 @@ func (s *server) executePlanTool(ctx context.Context, raw json.RawMessage) (any,
 		if err := core.SaveExecution(exec); err != nil {
 			return nil, fmt.Errorf("save execution: %w", err)
 		}
-		return exec, nil
+		return executionResponse(exec, 0, 0)
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
@@ -391,6 +382,8 @@ func stampExecution(e *core.Execution, execID string, plan *core.Plan) {
 func (s *server) getExecutionTool(ctx context.Context, raw json.RawMessage) (any, error) {
 	var a struct {
 		ExecutionID string `json:"execution_id"`
+		Offset      int    `json:"offset"`
+		Limit       int    `json:"limit"`
 	}
 	if err := unmarshalArgs(raw, &a); err != nil {
 		return nil, err
@@ -410,7 +403,7 @@ func (s *server) getExecutionTool(ctx context.Context, raw json.RawMessage) (any
 	if err != nil {
 		return nil, fmt.Errorf("load execution: %w", err)
 	}
-	return exec, nil
+	return executionResponse(exec, a.Offset, a.Limit)
 }
 
 func (s *server) cancelExecutionTool(ctx context.Context, raw json.RawMessage) (any, error) {
