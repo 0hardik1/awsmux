@@ -1,2 +1,4 @@
 awsmux
 results/
+bench/
+__pycache__/
