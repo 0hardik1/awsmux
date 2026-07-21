@@ -132,11 +132,7 @@ cache. Plans keep only the sha256 of their approval token.
 
 ## Token-efficiency methodology
 
-The numbers in the README come from two identical agents (same model,
-same instructions) given the same three-region task, one restricted to
-the raw aws CLI and one using awsmux, measured from their API
-transcripts: tool round trips, assistant turns, model-generated tokens,
-and total input tokens processed. At tiny scale awsmux's per-target
-JSONL framing slightly increases raw payload; the savings come from
-collapsing round trips and command generation, which is why the margin
-grows with fleet size.
+The cost and speed numbers in the README come from a 150-session,
+three-arm A/B benchmark with hermetic tool surfaces, ground-truth
+grading, and permutation-test statistics. The full design, results,
+and caveats live in [BENCHMARK.md](BENCHMARK.md).
