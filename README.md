@@ -83,18 +83,24 @@ agent cannot alter an approved plan or execute it twice. Want to watch
 an agent hit the boundary with zero blast radius? `awsmux demo mcp`
 serves the 100-account sandbox fleet over MCP.
 
-It is also measurably cheaper. Two identical agents did the same
-three-region task, one with the raw aws CLI and one with awsmux:
+It is also measurably cheaper, and faster. In a 150-session A/B
+benchmark (identical Claude Opus 4.8 agents, identical prompts, same
+100-account sandbox fleet), the awsmux arm beat a raw-shell aws CLI arm
+in every cell, all differences Holm-adjusted p < 0.05:
 
-| Measured from API transcripts | raw aws CLI | awsmux |
-|---|---|---|
-| Tool round trips | 7 | 3 |
-| Model-generated tokens | 1,900 | 817 (57% fewer) |
-| Total input tokens processed | 215,886 | 117,989 (45% fewer) |
+| task | fleet | cost per run (cli vs awsmux) | wall time |
+|---|---|---|---|
+| enumerate all VPCs | 10 accounts | $0.090 vs $0.068 (1.3x) | 34s vs 13s |
+| enumerate all VPCs | 50 accounts | $0.239 vs $0.120 (2.0x) | 84s vs 23s |
+| enumerate all VPCs | 100 accounts | $0.274 vs $0.193 (1.4x) | 94s vs 41s |
+| find the world-open group | 50 accounts | $0.229 vs $0.079 (2.9x) | 75s vs 14s |
+| find the world-open group | 100 accounts | $0.152 vs $0.098 (1.5x) | 90s vs 17s |
 
-The margin grows with fleet size: 30 accounts x 2 regions is 180 raw
-CLI round trips versus still just 3 awsmux calls
-([methodology](docs/ARCHITECTURE.md#token-efficiency-methodology)).
+awsmux needed a flat 4 turns at every fleet size, generated 1.8x to
+7.4x fewer output tokens, and, when an agent was handed both a shell
+and the MCP tools, it picked awsmux on its own and kept nearly all of
+the margin. Full design, statistics, and caveats:
+[docs/BENCHMARK.md](docs/BENCHMARK.md).
 
 ## Safety model
 
@@ -146,6 +152,8 @@ profiles they manage.
 
 - [Architecture](docs/ARCHITECTURE.md): the engine, the plan boundary,
   the executor, demo mode internals.
+- [Benchmark](docs/BENCHMARK.md): the agent-cost A/B methodology and
+  results behind the table above.
 
 ## Development
 
