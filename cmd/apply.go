@@ -7,8 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"awsmux/internal/core"
-	"awsmux/internal/output"
+	"github.com/0hardik1/awsmux/internal/core"
+	"github.com/0hardik1/awsmux/internal/output"
 )
 
 // AGENT CONTRACT (cli-plan): implement runApply.

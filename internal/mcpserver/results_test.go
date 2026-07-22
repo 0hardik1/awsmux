@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"awsmux/internal/core"
+	"github.com/0hardik1/awsmux/internal/core"
 )
 
 func mkResult(id string, status core.ResultStatus, value string) core.TargetResult {

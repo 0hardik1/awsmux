@@ -3,7 +3,7 @@ package cmd
 import (
 	"github.com/spf13/cobra"
 
-	"awsmux/internal/mcpserver"
+	"github.com/0hardik1/awsmux/internal/mcpserver"
 )
 
 var mcpCmd = &cobra.Command{

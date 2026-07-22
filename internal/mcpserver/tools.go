@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"awsmux/internal/core"
+	"github.com/0hardik1/awsmux/internal/core"
 )
 
 // toolHandler is invoked with the raw "arguments" object from tools/call.

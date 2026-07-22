@@ -6,7 +6,7 @@ package main
 import (
 	"os"
 
-	"awsmux/cmd"
+	"github.com/0hardik1/awsmux/cmd"
 )
 
 func main() {

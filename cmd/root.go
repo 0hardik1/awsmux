@@ -13,7 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"awsmux/internal/core"
+	"github.com/0hardik1/awsmux/internal/core"
 )
 
 var rootCmd = &cobra.Command{

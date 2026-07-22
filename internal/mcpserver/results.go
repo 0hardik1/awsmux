@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"awsmux/internal/core"
+	"github.com/0hardik1/awsmux/internal/core"
 )
 
 // Tool results are read by a model, and every character is paid for on every
