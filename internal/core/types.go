@@ -14,6 +14,7 @@ import (
 // Classification is the risk class of an AWS CLI operation.
 type Classification string
 
+// The risk classes, in increasing order of required ceremony.
 const (
 	ClassReadOnly    Classification = "read_only"
 	ClassMutating    Classification = "mutating"
@@ -77,6 +78,7 @@ type Selector struct {
 // PlanStatus is the lifecycle state of a plan.
 type PlanStatus string
 
+// Plan lifecycle states.
 const (
 	PlanPlanned   PlanStatus = "planned"
 	PlanApproved  PlanStatus = "approved"
@@ -119,6 +121,8 @@ type ExecOptions struct {
 // ResultStatus is the outcome of one target.
 type ResultStatus string
 
+// The stable per-target failure taxonomy; agents and CI rely on these
+// strings, so never rename them, only add.
 const (
 	StatusSuccess      ResultStatus = "success"
 	StatusError        ResultStatus = "error"

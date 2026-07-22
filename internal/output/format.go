@@ -197,7 +197,7 @@ func RenderPlan(w io.Writer, p *core.Plan) {
 	fmt.Fprintf(tw, "Hash\t%s\n", hash)
 	tw.Flush()
 	fmt.Fprintln(w)
-	renderTargetTable(w, p.Targets)
+	_ = renderTargetTable(w, p.Targets)
 	fmt.Fprintln(w)
 	if p.RequiresApproval {
 		fmt.Fprintf(w, "Next: awsmux approve %s  &&  awsmux apply %s --approval-token <token>\n", p.ID, p.ID)
@@ -316,11 +316,11 @@ func safeFileName(s string) string {
 }
 
 // singleLine collapses all whitespace runs to single spaces and truncates
-// the result to max runes.
-func singleLine(s string, max int) string {
+// the result to maxLen runes.
+func singleLine(s string, maxLen int) string {
 	s = strings.Join(strings.Fields(s), " ")
-	if r := []rune(s); len(r) > max {
-		return string(r[:max])
+	if r := []rune(s); len(r) > maxLen {
+		return string(r[:maxLen])
 	}
 	return s
 }
