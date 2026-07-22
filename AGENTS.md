@@ -22,16 +22,22 @@ AWS shared-config INI parsing is hand-rolled on purpose).
 go build ./... && go vet ./... && go test ./...
 ```
 
-Run that before every commit. Tests live next to the code
-(`internal/core/*_test.go`, `internal/mcpserver/*_test.go`); they are plain
-stdlib `testing`, no test frameworks. There is no Makefile, CI config, or
-linter beyond `go vet`.
+Run that before every commit, or use the make equivalents: `make build`
+(binary at `./bin/awsmux`), `make test`, `make vet`, `make check-fmt`, and
+`make lint` (golangci-lint, version pinned in the Makefile). `make setup`
+installs the git hooks and pre-warms the lint tool. Tests live next to the
+code (`internal/core/*_test.go`, `internal/mcpserver/*_test.go`); they are
+plain stdlib `testing`, no test frameworks, and need neither network nor
+Docker.
 
-To try the whole thing end to end with zero credentials and zero real AWS:
+To try the whole thing end to end with zero credentials and zero real AWS
+(needs Docker and the aws CLI):
 
 ```sh
-go build -o awsmux . && ./awsmux demo              # LocalStack-backed (needs Docker)
-./awsmux demo --synthetic targets                  # no Docker, canned fleet
+make fleet-up                    # LocalStack + a 101-profile test fleet
+source .tmp/fleet/env.sh && ./bin/awsmux targets
+make e2e                         # build + fleet-up + smoke test
+make fleet-down                  # remove the LocalStack container
 ```
 
 ## Layout
@@ -43,7 +49,6 @@ cmd/                       cobra CLI layer, one file per command
   run.go plan.go approve.go apply.go   the plan/approve/apply workflow
   targets.go history.go replay.go     discovery + history + replay
   mcp.go                   `awsmux mcp` -> internal/mcpserver.Serve
-  demo.go fakeaws.go       sandbox fleet (LocalStack or synthetic emulator)
   interactive.go           TTY checkbox target picker + typed confirmations
 internal/core/             THE ENGINE - everything meaningful lives here
   types.go                 all shared types + stable exit codes
@@ -60,7 +65,12 @@ internal/mcpserver/        MCP stdio server: 5 tools, hand-rolled JSON-RPC 2.0
   results.go               token-economy result shaping (grouping, paging)
   registry.go              in-flight async execution registry
 internal/output/           table | json | jsonl rendering (jsonl = agent/CI contract)
-docs/ARCHITECTURE.md       design decisions, plan-boundary sequence, demo internals
+scripts/fleet/             LocalStack test-fleet provisioner (stdlib-only dev tool)
+scripts/e2e.sh             smoke test run by `make e2e` and the CI e2e job
+Makefile                   build/test/lint/fleet-up/e2e/hooks targets
+.githooks/                 pre-commit (fmt, vet, lint) + commit-msg (Conventional Commits)
+.github/                   CI workflow + dependabot
+docs/ARCHITECTURE.md       design decisions, plan-boundary sequence, test-fleet internals
 ```
 
 Layering rule (from `internal/core/types.go`): everything an agent or the
@@ -136,22 +146,34 @@ these properties (and if a change touches one, say so explicitly in the PR):
 - **IDs** are `<prefix>-<26 base32 chars>` (ULID-style, time-sortable) from
   `core.NewID`; loaders accept unambiguous prefixes because agents truncate
   IDs constantly.
-- **Demo mode swaps the binary, not the code.** `AWSMUX_AWS_BIN` replaces
-  the `aws` invocation (LocalStack profiles or the hidden `fake-aws`
-  subcommand); every feature must keep working under it with zero
-  special-casing in the engine.
+- **`AWSMUX_AWS_BIN` is the general test seam.** It replaces the `aws`
+  invocation everywhere (identity preflight and executor); every feature
+  must keep working under an override with zero special-casing in the
+  engine.
+- **Conventional Commits are enforced.** The commit-msg hook and the CI
+  PR-title check share one type list: feat fix docs chore ci build
+  refactor test perf style revert. `make install-hooks` activates
+  `.githooks/` via `core.hooksPath`.
+- **golangci-lint is pinned in one place per side.** `GOLANGCI_LINT_VERSION`
+  in the Makefile and the `version:` of golangci-lint-action in
+  `.github/workflows/ci.yml` must stay in sync (config in `.golangci.yml`).
+- **CI runs `make e2e` against LocalStack on ubuntu.** Breaking fleet
+  provisioning (`scripts/fleet`) or the smoke script (`scripts/e2e.sh`)
+  fails CI, not just local runs.
 
 ## State at runtime
 
 `$AWSMUX_HOME` (default `~/.awsmux`): `plans/<id>.json` (+ `.claim` files),
 `executions/<id>.json` + `executions/index.jsonl`, `identity-cache.json`.
-Demo mode isolates state under `~/.awsmux/demo/home[-synthetic]`.
+The test fleet isolates state under `.tmp/fleet/home` via `AWSMUX_HOME`
+(exported by `.tmp/fleet/env.sh`).
 
 ## Docs to keep in sync
 
 - `README.md` — user-facing pitch, flag lists, safety table, comparison.
 - `docs/ARCHITECTURE.md` — engine diagram, plan-boundary sequence diagram,
-  executor semantics, demo internals, token-efficiency methodology.
+  executor semantics, test-fleet internals, token-efficiency methodology.
 
-If you change classification tables, exit codes, flags, MCP tool schemas, or
-the approval workflow, update both docs in the same change.
+If you change classification tables, exit codes, flags, MCP tool schemas,
+the approval workflow, Makefile targets, or CI job names, update both docs
+in the same change.
