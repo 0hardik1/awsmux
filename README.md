@@ -1,15 +1,22 @@
 # awsmux
 
-**Run one AWS CLI command across your whole fleet of accounts, safely.**
+**Run one AWS CLI command across your whole fleet in parallel:
+hundreds of accounts in seconds, safely.**
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Go](https://img.shields.io/badge/go-stdlib%20%2B%20cobra-00ADD8?logo=go)
 ![AI agents](https://img.shields.io/badge/AI%20agents-MCP%20built--in-8A2BE2)
 
-One command, every account and region, identities verified before
-anything runs, results merged into one stream. Anything that mutates is
-stopped by an approval boundary that even an AI agent with your admin
-credentials cannot talk its way past.
+![awsmux demo: STS-verified targets, a 100-account parallel sweep finishing in seconds, and a destructive command stopped at the approval boundary](docs/demo.gif)
+
+One command fanned out across every account and region at once (100
+parallel workers by default, `--concurrency` raises it), identities
+verified before anything runs, results
+merged into one stream. No more shell loops that take a coffee break to
+crawl the fleet. And anything that mutates is stopped by an approval
+boundary that even an AI agent with your admin credentials cannot talk
+its way past. The demo above is a real terminal against the bundled
+100-account sandbox fleet; replay it yourself with `make fleet-up`.
 
 **And it is measurably cheaper and faster for agents. In a 150-session
 A/B benchmark (identical Claude Opus 4.8 agents, identical prompts,
@@ -189,6 +196,9 @@ CI runs `go test` and `make build` on ubuntu and macos, gofmt + go vet,
 golangci-lint repo-wide, the LocalStack e2e smoke test on ubuntu, and a
 Conventional Commits check on PR titles (the commit-msg hook enforces
 the same convention locally).
+
+The demo GIF at the top is a real Ghostty session against the
+LocalStack fleet, recorded with [Kap](https://getkap.co).
 
 Dependencies: stdlib plus cobra. Roadmap: organization-aware discovery
 (`--ou` plus role assumption), policy packs, Homebrew tap and release
