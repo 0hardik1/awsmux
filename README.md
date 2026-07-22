@@ -146,11 +146,15 @@ everywhere, a stdio server with command `awsmux` and args `["mcp"]`.
 
 The agent gets five structured tools (`list_aws_targets`,
 `plan_aws_operation`, `execute_aws_plan`, `get_aws_execution`,
-`cancel_aws_execution`) instead of a raw shell. Read-only plans execute
-freely. Anything else refuses until you run `awsmux approve <plan-id>`
-in your own terminal and hand the agent the one-time token, which binds
-to the plan's sha256 hash, so the agent cannot alter an approved plan
-or execute it twice.
+`cancel_aws_execution`) instead of a raw shell, and it uses them on
+its own: once registered there is nothing to invoke, you just ask
+("find every security group open to the world in prod") and the model
+reaches for the tools automatically. Read-only operations execute
+freely. Anything else comes back as a plan: the agent hands you a plan
+ID, you run `awsmux approve <plan-id>` in your own terminal, and you
+paste the one-time token back into the chat for the agent to apply.
+The token binds to the plan's sha256 hash, so the agent cannot alter
+an approved plan or execute it twice.
 
 Want to watch an agent hit the boundary with zero blast radius?
 Register the sandbox fleet instead: after `make fleet-up`, point the
