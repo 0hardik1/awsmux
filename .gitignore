@@ -2,3 +2,5 @@ awsmux
 results/
 bench/
 __pycache__/
+/bin/
+/.tmp/
