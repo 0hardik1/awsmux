@@ -10,10 +10,15 @@
 
 Output docs/demo.gif
 
+# Layout note: GitHub scales the GIF to the README column, so on-screen text
+# size is set by the terminal's column count, not FontSize. These dimensions
+# give ~130 columns (vhs glyph cells are ~0.66em wide): enough for the targets
+# table, the plan detail rows, and the 127-char approve/apply "Next" line to
+# stay unwrapped. Long jsonl lines wrap during the fast scroll, which is fine.
 Set Shell bash
-Set FontSize 16
-Set Width 1680
-Set Height 840
+Set FontSize 20
+Set Width 1760
+Set Height 900
 Set Padding 20
 Set Framerate 15
 Set TypingSpeed 25ms
@@ -40,6 +45,10 @@ Type "awsmux run --dedupe --format jsonl -- ec2 describe-vpcs --query 'Vpcs[].Vp
 Enter
 Wait
 Sleep 3.5s
+
+Type "clear"
+Enter
+Wait
 
 Type "# destructive commands are refused outright"
 Enter

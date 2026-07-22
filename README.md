@@ -1,7 +1,7 @@
 # awsmux
 
-**Run one AWS CLI command across your whole fleet of accounts in
-parallel: 100 accounts in seconds, safely.**
+**Run one AWS CLI command across your whole fleet in parallel:
+hundreds of accounts in seconds, safely.**
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Go](https://img.shields.io/badge/go-stdlib%20%2B%20cobra-00ADD8?logo=go)
@@ -10,7 +10,8 @@ parallel: 100 accounts in seconds, safely.**
 ![awsmux demo: STS-verified targets, a 100-account parallel sweep finishing in seconds, and a destructive command stopped at the approval boundary](docs/demo.gif)
 
 One command fanned out across every account and region at once (100
-workers by default), identities verified before anything runs, results
+parallel workers by default, `--concurrency` raises it), identities
+verified before anything runs, results
 merged into one stream. No more shell loops that take a coffee break to
 crawl the fleet. And anything that mutates is stopped by an approval
 boundary that even an AI agent with your admin credentials cannot talk
