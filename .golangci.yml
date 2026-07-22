@@ -1,0 +1,25 @@
+# Version pinned in the Makefile (GOLANGCI_LINT_VERSION) and in
+# .github/workflows/ci.yml; keep the three in sync.
+version: "2"
+linters:
+  # standard = errcheck, govet, ineffassign, staticcheck, unused
+  default: standard
+  enable:
+    - misspell
+    - revive
+    - unconvert
+  exclusions:
+    generated: lax
+    presets:
+      # The codebase deliberately ignores fmt.Fprint*/Close error returns;
+      # std-error-handling keeps errcheck focused on real signal.
+      - common-false-positives
+      - std-error-handling
+    rules:
+      # cobra's RunE signature is fixed; its cmd/args parameters are often
+      # unused by a given handler and that is fine.
+      - linters: [revive]
+        text: "unused-parameter"
+formatters:
+  enable:
+    - gofmt

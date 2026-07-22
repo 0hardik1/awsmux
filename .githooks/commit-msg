@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Commit-msg: enforce Conventional Commits on the first line.
+# The same type list backs the CI "Conventional Commits PR title" check.
+# Installed via `make install-hooks`. Bypass with: git commit --no-verify
+set -euo pipefail
+
+first=$(head -n1 "$1")
+case "$first" in
+  Merge\ *|Revert\ *|fixup!*|squash!*) exit 0 ;;
+esac
+
+pattern='^(feat|fix|docs|chore|ci|build|refactor|test|perf|style|revert)(\([a-zA-Z0-9/_.-]+\))?(!)?: .+'
+if echo "$first" | grep -Eq "$pattern"; then
+  exit 0
+fi
+
+echo "commit-msg: first line must be Conventional Commits, e.g. 'fix(core): handle empty selector'" >&2
+echo "  types: feat fix docs chore ci build refactor test perf style revert" >&2
+exit 1
