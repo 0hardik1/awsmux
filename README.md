@@ -66,12 +66,17 @@ watch the hash check refuse it.
 
 ## Real fleet
 
-Same commands, pointed at your own AWS config instead of the sandbox
-environment. awsmux discovers profiles from your
-existing AWS config (SSO or keys) and verifies every identity with STS
+Same commands, pointed at your own AWS setup instead of the sandbox
+environment. Zero configuration of its own: awsmux discovers profiles
+from your existing shared config file (`~/.aws/config`) and shared
+credentials file (`~/.aws/credentials`), honoring `AWS_CONFIG_FILE` and
+`AWS_SHARED_CREDENTIALS_FILE`. SSO, static keys, and
+`credential_process` profiles all work unchanged, because awsmux always
+executes through the aws CLI and verifies every identity with STS
 before running anything:
 
 ```sh
+awsmux doctor                       # first run? verify aws CLI, files, profiles
 awsmux targets --regions us-east-1,us-west-2
 
 awsmux run --profiles 'prod-*' --exclude '*-sandbox' --format jsonl \
@@ -81,6 +86,12 @@ awsmux plan -- ssm put-parameter --name /app/flag --value on --type String
 awsmux approve plan-01k...          # prints a one-time token, never stored
 awsmux apply plan-01k... --approval-token <token>
 ```
+
+Not seeing your profiles? `awsmux doctor` shows exactly which files
+were checked, how many profiles each contributed, and whether the aws
+CLI and state directory are usable. `awsmux targets` reports where each
+profile came from (a `SOURCE` column in table mode, a `source` field in
+jsonl: `config`, `credentials`, or `both`).
 
 Useful flags: `--concurrency` (default 100: fleet-wide fan-out is the
 point; each in-flight target is one aws CLI subprocess), `--timeout

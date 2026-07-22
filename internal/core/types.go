@@ -23,6 +23,16 @@ const (
 	ClassUnknown Classification = "unknown"
 )
 
+// ProfileSource records which shared AWS file(s) defined a profile.
+type ProfileSource string
+
+// The possible profile sources.
+const (
+	SourceConfig      ProfileSource = "config"
+	SourceCredentials ProfileSource = "credentials"
+	SourceBoth        ProfileSource = "both"
+)
+
 // Target is a single execution target: one profile in one region.
 type Target struct {
 	// ID is "<profile>@<region>" (or just the profile name when region is
@@ -31,6 +41,8 @@ type Target struct {
 	Profile string `json:"profile"`
 	// Region may be empty, meaning the profile default region decides.
 	Region string `json:"region,omitempty"`
+	// Source is which shared AWS file(s) defined the profile.
+	Source ProfileSource `json:"source,omitempty"`
 	// AccountID and Principal are filled by identity preflight.
 	AccountID string `json:"account_id,omitempty"`
 	Principal string `json:"principal,omitempty"`
@@ -43,10 +55,12 @@ type Target struct {
 	PreflightErr string `json:"preflight_error,omitempty"`
 }
 
-// Profile is one profile parsed from the AWS shared config.
+// Profile is one profile parsed from the AWS shared config and credentials
+// files.
 type Profile struct {
-	Name   string `json:"name"`
-	Region string `json:"region,omitempty"`
+	Name   string        `json:"name"`
+	Region string        `json:"region,omitempty"`
+	Source ProfileSource `json:"source,omitempty"`
 }
 
 // Identity is the result of one sts get-caller-identity call.

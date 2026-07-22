@@ -16,8 +16,18 @@ EXPECT=${AWSMUX_FLEET_SIZE:?env.sh did not set AWSMUX_FLEET_SIZE}
 fail() { echo "e2e: FAIL: $*" >&2; exit 1; }
 
 # 1. Discovery plus STS verification of every profile.
-n=$($BIN targets --format jsonl | wc -l | tr -d ' ')
+tgt_out=$($BIN targets --format jsonl)
+n=$(echo "$tgt_out" | wc -l | tr -d ' ')
 [ "$n" = "$EXPECT" ] || fail "expected $EXPECT targets, got $n"
+
+# 1b. The fleet writes every profile to both shared files, so each target
+# must be sourced from "both".
+if echo "$tgt_out" | grep -v '"source":"both"' >/dev/null; then
+  fail "expected every target sourced from both shared files"
+fi
+
+# 1c. Doctor reports a healthy environment.
+$BIN doctor >/dev/null
 
 # 2. Dedupe collapses the planted admin-legacy duplicate.
 nd=$($BIN targets --dedupe --format jsonl | wc -l | tr -d ' ')
