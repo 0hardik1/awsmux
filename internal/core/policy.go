@@ -15,8 +15,9 @@ import (
 // PolicyVersion is stamped into plans; bump when approval rules change.
 const PolicyVersion = "v1"
 
-// RequiresApproval: ReadOnly runs freely; Mutating, Destructive, and
-// Unknown all require an approval token.
+// RequiresApproval reports whether a classification needs an approval
+// token: ReadOnly runs freely; Mutating, Destructive, and Unknown all
+// require one.
 func RequiresApproval(c Classification) bool {
 	return c != ClassReadOnly
 }

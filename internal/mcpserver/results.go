@@ -250,7 +250,6 @@ func pageRows(base map[string]any, results []core.TargetResult, offset, limit in
 		row := resultRow(results[i])
 		size += encodedLen(row)
 		if size > mcpMaxResultChars && len(rows) > 0 {
-			end = i
 			break
 		}
 		rows = append(rows, row)

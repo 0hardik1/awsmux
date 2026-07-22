@@ -27,16 +27,19 @@ Three arms, identical prompt (the prompt never names awsmux):
 
 - **awsmux**: the five awsmux MCP tools only, no built-in tools at all.
 - **cli**: the Bash built-in only, with `AWS_CONFIG_FILE` pointing at
-  the demo-generated config, reaching the same fleet. The baseline is
+  the fleet-generated config, reaching the same fleet. The baseline is
   allowed to be smart; one parallel shell loop is the legitimate
   competitor.
 - **mixed**: Bash plus the awsmux MCP tools. The adoption question:
   does an agent pick awsmux when both paths are available, and does it
   pay off?
 
-The fleet is the awsmux demo fleet: 100 LocalStack-backed profiles,
-each its own emulated account, seeded with VPCs and security groups
-including one deliberately world-open group.
+The fleet is the LocalStack test fleet (now provisioned by
+`make fleet-up`): 100 LocalStack-backed profiles, each its own emulated
+account, seeded with VPCs and security groups including one
+deliberately world-open group. (The recorded 2026-07-20 sweep
+provisioned this identical fleet via the `awsmux demo` command that
+`make fleet-up` has since replaced.)
 
 ### Conditions
 

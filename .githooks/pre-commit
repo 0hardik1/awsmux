@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Pre-commit: gofmt on staged Go files, go vet, golangci-lint (repo-wide).
+# Installed via `make install-hooks`. Bypass with: git commit --no-verify
+set -euo pipefail
+
+staged=$(git diff --cached --name-only --diff-filter=ACM -- '*.go')
+if [ -n "$staged" ]; then
+  # shellcheck disable=SC2086
+  bad=$(gofmt -l $staged)
+  if [ -n "$bad" ]; then
+    echo "pre-commit: gofmt needed on:" >&2
+    echo "$bad" >&2
+    exit 1
+  fi
+fi
+
+go vet ./...
+
+# Uses the version pinned in the Makefile; `make setup` pre-warms the build
+# so this is fast after the first run.
+make -s lint

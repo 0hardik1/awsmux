@@ -11,7 +11,7 @@ flowchart LR
         HU["Human (CLI)"]
     end
     AG --> MCP["internal/mcpserver<br/>5 structured tools,<br/>hand-rolled JSON-RPC"]
-    HU --> CMD["cmd/<br/>run, plan, approve, apply,<br/>targets, history, replay, demo"]
+    HU --> CMD["cmd/<br/>run, plan, approve, apply,<br/>targets, history, replay"]
     MCP --> CORE
     CMD --> CORE
     subgraph CORE [internal/core: the engine]
@@ -30,9 +30,9 @@ flowchart LR
 - **awsmux shells out to the AWS CLI** instead of embedding an SDK. That
   keeps every AWS service and every `--query` expression instantly
   available, reuses your existing credential machinery (SSO included),
-  and means awsmux never lags behind new AWS APIs. Demo mode swaps the
-  binary via `AWSMUX_AWS_BIN`, which is why every feature works offline
-  with zero special-casing.
+  and means awsmux never lags behind new AWS APIs. Tests swap the
+  binary via `AWSMUX_AWS_BIN`, so every feature runs unchanged against
+  a stand-in CLI with zero special-casing.
 - **Identity is never inferred from profile names.** Every target is
   verified with `sts:GetCallerIdentity` before anything runs, cached for
   five minutes. Duplicate targets (same account, principal, and region
@@ -98,31 +98,33 @@ persisted and replayable: `awsmux replay` re-verifies identities and
 re-applies the safety gates fresh, so a replay is a new decision, not a
 bypass.
 
-## Demo mode
+## Test fleet
 
-`awsmux demo <anything>` re-executes awsmux inside a sandbox: a
-generated `AWS_CONFIG_FILE` and credentials file describing a fictional
-100-account fleet (10 teams x prod/stage x 5 shards, 3 regions, plus
-one deliberate duplicate profile), and an `AWSMUX_HOME` under
-`~/.awsmux/demo` isolating plans and history per backend.
+`make fleet-up` runs `scripts/fleet` (a stdlib-only dev tool, not part
+of the awsmux binary): it boots a pinned `localstack/localstack:3.8`
+container (the last fully license-free community line) and generates an
+`AWS_CONFIG_FILE` and credentials file under `.tmp/fleet/` describing a
+fictional 101-profile fleet (10 teams x prod/stage x 5 shards, 3
+regions, plus one deliberate duplicate profile so `--dedupe` has
+something to find; `FLEET_TEAMS` / `FLEET_SHARDS` shrink it). Each
+profile's `endpoint_url` points at LocalStack and its access key is its
+12-digit account ID, which LocalStack uses to namespace resources per
+account, so STS preflight verifies real per-account identities and
+mutations genuinely persist. State is isolated via
+`AWSMUX_HOME=.tmp/fleet/home`; `source .tmp/fleet/env.sh` exports
+everything. Provisioning seeds a few storyline resources once per
+container (a `.seeded` marker holds the container ID, so a recreated
+container reseeds), most importantly the payments-prod-1 security group
+that is open to the world.
 
-Two backends:
-
-- **LocalStack (default).** The demo starts a pinned
-  `localstack/localstack:3.8` container (the last fully license-free
-  community line) and points every profile's `endpoint_url` at it. Each
-  profile's access key is its 12-digit account ID, which LocalStack
-  uses to namespace resources per account, so STS preflight verifies
-  real per-account identities and mutations genuinely persist. Setup
-  seeds a few storyline resources, most importantly the payments-prod-1
-  security group that is open to the world.
-- **Synthetic (`--synthetic`).** `AWSMUX_AWS_BIN` swaps the AWS CLI for
-  the hidden `fake-aws` emulator: deterministic canned responses with
-  synthetic latency, one planted access denial, and a small JMESPath
-  subset for `--query`. Zero dependencies, zero network.
-
-Either way the real engine, policy, and MCP server run byte-for-byte
-identical code.
+`make e2e` runs `scripts/e2e.sh` against that fleet: discovery with STS
+verification of every profile, dedupe of the planted duplicate,
+fleet-wide read-only fan-out, the approval gate refusing an unapproved
+mutation with exit 3, and a full plan / approve / apply roundtrip. CI
+runs the identical script in the "e2e (LocalStack)" job on ubuntu. The
+real engine, policy, and MCP server run byte-for-byte identical code
+against the fleet. Reset with `make fleet-down` (container) and
+`make clean` (files).
 
 ## State
 

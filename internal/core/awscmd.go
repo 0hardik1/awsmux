@@ -8,9 +8,9 @@ import (
 )
 
 // AWSBinEnv overrides the command used to invoke the AWS CLI. It may contain
-// leading arguments separated by spaces (e.g. "/path/to/awsmux fake-aws"),
-// which is how demo mode swaps in its offline fleet without touching any
-// other code path.
+// leading arguments separated by spaces (e.g. "/path/to/stub-aws --flag"),
+// which is how tests swap in a stand-in CLI without touching any other code
+// path.
 const AWSBinEnv = "AWSMUX_AWS_BIN"
 
 // awsExec builds the exec.Cmd for one AWS CLI invocation, honoring AWSBinEnv.
