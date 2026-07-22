@@ -27,8 +27,8 @@ func ValidFormat(f string) bool {
 
 // RenderTargets writes the target list. Table columns:
 // ID, PROFILE, ACCOUNT, REGION, PRINCIPAL (shortened to the part after the
-// last "/"), NOTES (duplicate / preflight error). json = one array; jsonl =
-// one target per line.
+// last "/"), SOURCE (config | credentials | both), NOTES (duplicate /
+// preflight error). json = one array; jsonl = one target per line.
 func RenderTargets(w io.Writer, targets []core.Target, format string) error {
 	switch format {
 	case "table":
@@ -262,16 +262,85 @@ func WriteOutputDir(dir string, e *core.Execution) error {
 	return nil
 }
 
+// RenderDoctor writes the environment diagnostic. Table mode: one row per
+// check (CHECK, STATUS, DETAIL) with ok/FAIL markers and env-override
+// annotations. json mode: the whole report, indented. jsonl is rejected:
+// the report is a single object, not a stream.
+func RenderDoctor(w io.Writer, r core.DoctorReport, format string) error {
+	switch format {
+	case "table":
+		tw := new(tabwriter.Writer).Init(w, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(tw, "CHECK\tSTATUS\tDETAIL")
+		row := func(check string, ok bool, detail string) {
+			status := "ok"
+			if !ok {
+				status = "FAIL"
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\n", check, status, detail)
+		}
+		if r.AWSCLIErr != "" {
+			row("aws cli", false, singleLine(r.AWSCLIErr, 120))
+		} else {
+			row("aws cli", true, r.AWSCLIVersion+" at "+r.AWSCLIPath)
+		}
+		row("config file", r.ConfigFile.ParseErr == "", doctorFileDetail(r.ConfigFile))
+		row("credentials file", r.CredentialsFile.ParseErr == "", doctorFileDetail(r.CredentialsFile))
+		profDetail := fmt.Sprintf("%d discovered", r.ProfilesTotal)
+		if r.ProfilesBoth > 0 {
+			profDetail += fmt.Sprintf(" (%d defined in both files)", r.ProfilesBoth)
+		}
+		row("profiles", r.ProfilesTotal > 0, profDetail)
+		switch {
+		case r.Home.Writable:
+			row("state dir", true, r.Home.Path+" writable"+doctorEnvNote(r.Home.EnvVar))
+		default:
+			row("state dir", false, singleLine(r.Home.Err, 120))
+		}
+		if err := tw.Flush(); err != nil {
+			return fmt.Errorf("rendering doctor table: %w", err)
+		}
+		return nil
+	case "json":
+		b, err := json.MarshalIndent(r, "", "  ")
+		if err != nil {
+			return fmt.Errorf("encoding doctor report: %w", err)
+		}
+		_, err = fmt.Fprintln(w, string(b))
+		return err
+	default:
+		return fmt.Errorf("unknown format %q for doctor (want table or json)", format)
+	}
+}
+
+// doctorFileDetail summarizes one shared-file check for the table renderer.
+func doctorFileDetail(f core.DoctorFileReport) string {
+	if f.ParseErr != "" {
+		return singleLine(f.ParseErr, 120)
+	}
+	if !f.Exists {
+		return "not found at " + f.Path + doctorEnvNote(f.EnvVar) + ", optional"
+	}
+	return fmt.Sprintf("%d profiles at %s%s", f.Profiles, f.Path, doctorEnvNote(f.EnvVar))
+}
+
+func doctorEnvNote(envVar string) string {
+	if envVar == "" {
+		return ""
+	}
+	return " (set via " + envVar + ")"
+}
+
 func renderTargetTable(w io.Writer, targets []core.Target) error {
 	tw := new(tabwriter.Writer).Init(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "ID\tPROFILE\tACCOUNT\tREGION\tPRINCIPAL\tNOTES")
+	fmt.Fprintln(tw, "ID\tPROFILE\tACCOUNT\tREGION\tPRINCIPAL\tSOURCE\tNOTES")
 	for _, t := range targets {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			t.ID,
 			t.Profile,
 			orDash(t.AccountID),
 			orDash(t.Region),
 			orDash(shortPrincipal(t.Principal)),
+			orDash(string(t.Source)),
 			targetNotes(t))
 	}
 	if err := tw.Flush(); err != nil {
