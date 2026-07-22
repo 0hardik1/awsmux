@@ -1,5 +1,8 @@
-# vhs tape for the README demo GIF (https://github.com/charmbracelet/vhs).
-# Regenerate from the repo root:
+# vhs tape rendering the README demo storyline headlessly
+# (https://github.com/charmbracelet/vhs). The committed docs/demo.gif is a
+# real screen recording made with scripts/demo-live.sh; running this tape
+# overwrites it with a synthetic render of the same storyline, useful when
+# no screen recorder is available. To regenerate from the repo root:
 #   make build && make fleet-up
 #   source .tmp/fleet/env.sh && ./bin/awsmux targets >/dev/null   # pre-warm the identity cache
 #   vhs scripts/demo.tape

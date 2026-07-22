@@ -197,9 +197,12 @@ golangci-lint repo-wide, the LocalStack e2e smoke test on ubuntu, and a
 Conventional Commits check on PR titles (the commit-msg hook enforces
 the same convention locally).
 
-The demo GIF at the top is recorded against the LocalStack fleet with
-[vhs](https://github.com/charmbracelet/vhs); `scripts/demo.tape` has
-the script and regeneration steps.
+The demo GIF at the top is a real Ghostty session against the
+LocalStack fleet, recorded with [Kap](https://getkap.co):
+`scripts/demo-live.sh` self-types and runs the storyline for real
+(recording steps in its header). `scripts/demo.tape` renders the same
+storyline headlessly with [vhs](https://github.com/charmbracelet/vhs)
+if you have no screen recorder.
 
 Dependencies: stdlib plus cobra. Roadmap: organization-aware discovery
 (`--ou` plus role assumption), policy packs, Homebrew tap and release
