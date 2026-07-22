@@ -76,14 +76,12 @@ func Doctor(ctx context.Context) DoctorReport {
 	return r
 }
 
-// doctorAWSCLI locates the AWS CLI (honoring the AWSMUX_AWS_BIN test seam)
+// doctorAWSCLI locates the AWS CLI via the same resolution awsExec uses
+// (AWSMUX_AWS_BIN override, then PATH, then well-known install locations)
 // and probes `aws --version` under a short timeout. AWS CLI v1 prints the
 // version to stderr, so the probe reads combined output.
 func doctorAWSCLI(ctx context.Context) (path, version, errMsg string) {
-	bin := "aws"
-	if override := strings.TrimSpace(os.Getenv(AWSBinEnv)); override != "" {
-		bin = strings.Fields(override)[0]
-	}
+	bin, _ := resolveAWSBin()
 	resolved, err := exec.LookPath(bin)
 	if err != nil {
 		return "", "", err.Error()
