@@ -5,11 +5,11 @@ Guidance for AI agents (and new humans) working on this codebase.
 ## What awsmux is
 
 awsmux runs one AWS CLI command across a whole fleet of accounts/regions,
-safely. It discovers profiles from the AWS shared config, verifies every
-target identity with STS before anything runs, classifies each operation by
-risk, gates anything non-read-only behind an immutable plan + human approval
-token, fans out with a worker pool, and persists every run to a replayable
-history. Agents consume it over MCP (`awsmux mcp`); humans use the CLI.
+safely. It discovers profiles from the AWS shared config and credentials
+files, verifies every target identity with STS before anything runs,
+classifies each operation by risk, gates anything non-read-only behind an
+immutable plan + human approval token, fans out with a worker pool, and
+persists every run to a replayable history. Agents consume it over MCP (`awsmux mcp`); humans use the CLI.
 
 Single Go module (`awsmux`), Go 1.26. Dependencies: **stdlib plus cobra,
 nothing else** — this is a deliberate design rule, not an accident. Do not
@@ -48,11 +48,12 @@ cmd/                       cobra CLI layer, one file per command
   root.go                  root command, ExitError, shared selector/exec flags
   run.go plan.go approve.go apply.go   the plan/approve/apply workflow
   targets.go history.go replay.go     discovery + history + replay
+  doctor.go                `awsmux doctor` environment diagnostic
   mcp.go                   `awsmux mcp` -> internal/mcpserver.Serve
   interactive.go           TTY checkbox target picker + typed confirmations
 internal/core/             THE ENGINE - everything meaningful lives here
   types.go                 all shared types + stable exit codes
-  discovery.go             profile INI parsing, glob selectors, target expansion
+  discovery.go             config + credentials INI parsing/merge, glob selectors
   identity.go              STS preflight, 5m cache, dedup, re-verification
   classify.go              verb -> risk class tables + service overrides
   plan.go                  immutable plans, sha256 hash, ULID-style IDs
@@ -60,6 +61,7 @@ internal/core/             THE ENGINE - everything meaningful lives here
   executor.go              worker pool, failure taxonomy, arg validation
   store.go                 ~/.awsmux persistence (plans/, executions/, index.jsonl)
   awscmd.go                aws CLI invocation, AWSMUX_AWS_BIN override
+  doctor.go                environment diagnostic behind `awsmux doctor`
 internal/mcpserver/        MCP stdio server: 5 tools, hand-rolled JSON-RPC 2.0
   server.go tools.go       framing + tool schemas/handlers
   results.go               token-economy result shaping (grouping, paging)

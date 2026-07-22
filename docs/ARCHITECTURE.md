@@ -15,7 +15,7 @@ flowchart LR
     MCP --> CORE
     CMD --> CORE
     subgraph CORE [internal/core: the engine]
-        DISC["discovery<br/>profiles, globs,<br/>region expansion"]
+        DISC["discovery<br/>config + credentials files,<br/>globs, region expansion"]
         IDEN["identity<br/>STS preflight,<br/>dedup, 5m cache"]
         CLS["classify<br/>verb risk classes"]
         PLAN["plan + policy<br/>sha256 hash,<br/>approval tokens"]
@@ -29,10 +29,23 @@ flowchart LR
 
 - **awsmux shells out to the AWS CLI** instead of embedding an SDK. That
   keeps every AWS service and every `--query` expression instantly
-  available, reuses your existing credential machinery (SSO included),
-  and means awsmux never lags behind new AWS APIs. Tests swap the
-  binary via `AWSMUX_AWS_BIN`, so every feature runs unchanged against
-  a stand-in CLI with zero special-casing.
+  available, reuses your existing credential machinery (SSO, static
+  keys, and `credential_process` all pass straight through), and means
+  awsmux never lags behind new AWS APIs. Tests swap the binary via
+  `AWSMUX_AWS_BIN`, so every feature runs unchanged against a stand-in
+  CLI with zero special-casing.
+- **Discovery reads both shared AWS files.** Profiles come from the
+  shared config file (`AWS_CONFIG_FILE` or `~/.aws/config`, `[profile
+  x]` headers) and the shared credentials file
+  (`AWS_SHARED_CREDENTIALS_FILE` or `~/.aws/credentials`, bare `[x]`
+  headers taken verbatim). One profile per name: config order first,
+  credentials-only profiles appended, and a non-empty credentials
+  region overrides the config one (AWS CLI precedence). Each target
+  reports its source (`config`, `credentials`, or `both`). Only the
+  region key is read; credential material never is. `awsmux doctor`
+  runs the same parse and reports which files were checked, per-file
+  profile counts, aws CLI availability, and state-dir writability, so a
+  first run that finds nothing explains itself.
 - **Identity is never inferred from profile names.** Every target is
   verified with `sts:GetCallerIdentity` before anything runs, cached for
   five minutes. Duplicate targets (same account, principal, and region
@@ -118,7 +131,8 @@ container reseeds), most importantly the payments-prod-1 security group
 that is open to the world.
 
 `make e2e` runs `scripts/e2e.sh` against that fleet: discovery with STS
-verification of every profile, dedupe of the planted duplicate,
+verification of every profile (each sourced from both shared files),
+a healthy `doctor` report, dedupe of the planted duplicate,
 fleet-wide read-only fan-out, the approval gate refusing an unapproved
 mutation with exit 3, and a full plan / approve / apply roundtrip. CI
 runs the identical script in the "e2e (LocalStack)" job on ubuntu. The
