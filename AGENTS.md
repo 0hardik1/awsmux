@@ -11,7 +11,8 @@ classifies each operation by risk, gates anything non-read-only behind an
 immutable plan + human approval token, fans out with a worker pool, and
 persists every run to a replayable history. Agents consume it over MCP (`awsmux mcp`); humans use the CLI.
 
-Single Go module (`awsmux`), Go 1.26. Dependencies: **stdlib plus cobra,
+Single Go module (`github.com/0hardik1/awsmux`, so `go install` works
+against the public repo), Go 1.26. Dependencies: **stdlib plus cobra,
 nothing else** — this is a deliberate design rule, not an accident. Do not
 add dependencies (the MCP layer is hand-rolled JSON-RPC on purpose, and the
 AWS shared-config INI parsing is hand-rolled on purpose).
@@ -60,7 +61,8 @@ internal/core/             THE ENGINE - everything meaningful lives here
   policy.go                approval tokens, CheckApproval gate
   executor.go              worker pool, failure taxonomy, arg validation
   store.go                 ~/.awsmux persistence (plans/, executions/, index.jsonl)
-  awscmd.go                aws CLI invocation, AWSMUX_AWS_BIN override
+  awscmd.go                aws CLI invocation: AWSMUX_AWS_BIN override,
+                           then PATH, then well-known install locations
   doctor.go                environment diagnostic behind `awsmux doctor`
 internal/mcpserver/        MCP stdio server: 5 tools, hand-rolled JSON-RPC 2.0
   server.go tools.go       framing + tool schemas/handlers
