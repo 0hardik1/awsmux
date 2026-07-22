@@ -30,7 +30,7 @@ var tools = []toolDef{
 	{
 		Name: "list_aws_targets",
 		Description: "Discover AWS execution targets (profile plus region pairs) from the " +
-			"local AWS config. Use this first, before planning, to see exactly which " +
+			"local AWS shared config and credentials files. Use this first, before planning, to see exactly which " +
 			"accounts and principals an operation would touch. By default every target " +
 			"is preflighted with sts get-caller-identity, filling account_id and " +
 			"principal and surfacing credential problems; set preflight to false to " +

@@ -224,7 +224,9 @@ func stsCallerIdentity(ctx context.Context, profile string) Identity {
 
 // ssoExpiry returns the soonest matching SSO token expiry for the profile,
 // or nil when the profile is not SSO-based or nothing usable is cached.
-// Strictly best effort: every failure just yields nil.
+// Strictly best effort: every failure just yields nil. SSO settings are only
+// valid in the shared config file, so the credentials file is intentionally
+// not consulted here.
 func ssoExpiry(profile string) *time.Time {
 	sections, err := parseINIFile(awsConfigPath())
 	if err != nil {

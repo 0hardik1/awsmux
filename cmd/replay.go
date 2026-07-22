@@ -70,7 +70,7 @@ func runReplay(cmd *cobra.Command, args []string) error {
 	for _, r := range old.Results {
 		if !known[r.Target.Profile] {
 			return Exitf(core.ExitConfigError,
-				"profile %q from execution %s no longer exists in the AWS config", r.Target.Profile, old.ID)
+				"profile %q from execution %s no longer exists in the AWS config/credentials files", r.Target.Profile, old.ID)
 		}
 		targets = append(targets, core.NewTarget(r.Target.Profile, r.Target.Region))
 	}
