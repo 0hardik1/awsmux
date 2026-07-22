@@ -33,7 +33,12 @@ flowchart LR
   keys, and `credential_process` all pass straight through), and means
   awsmux never lags behind new AWS APIs. Tests swap the binary via
   `AWSMUX_AWS_BIN`, so every feature runs unchanged against a stand-in
-  CLI with zero special-casing.
+  CLI with zero special-casing. Resolution order: the `AWSMUX_AWS_BIN`
+  override, then PATH, then well-known install locations (Homebrew,
+  the official installers, distro packages). The fallback matters for
+  MCP: GUI-launched clients such as Claude Desktop spawn `awsmux mcp`
+  with a minimal PATH that rarely includes the aws CLI. `awsmux
+  doctor` reports the same resolution.
 - **Discovery reads both shared AWS files.** Profiles come from the
   shared config file (`AWS_CONFIG_FILE` or `~/.aws/config`, `[profile
   x]` headers) and the shared credentials file

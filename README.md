@@ -110,19 +110,63 @@ the same account), `--output-dir` (one result file per target),
 
 ## Give it to your AI agent
 
+Two commands, zero configuration:
+
 ```sh
-claude mcp add awsmux -- /path/to/awsmux mcp
+go install github.com/0hardik1/awsmux@latest
+claude mcp add --scope user awsmux -- awsmux mcp
 ```
+
+There is nothing to configure. `awsmux mcp` serves the agent interface
+over stdio via the Model Context Protocol: no port, no daemon, no
+config file, no credentials of its own. It discovers the same profiles
+your terminal already has (shared config and credentials files; SSO,
+static keys, and `credential_process` all pass straight through) and
+verifies every identity with STS before anything runs. It even locates
+the aws CLI in well-known install locations when an MCP client spawns
+it with a bare GUI PATH. Check the connection with `/mcp` inside
+Claude Code, then ask the agent "which AWS accounts can you see?"
+(Drop `--scope user` to register for the current project only. No Go
+toolchain? `git clone` + `make build` gives you `./bin/awsmux`.)
+
+**Claude Desktop**: Settings > Developer > Edit Config, then add to
+`claude_desktop_config.json` (GUI apps do not read your shell PATH,
+so use the absolute path from `which awsmux`):
+
+```json
+{
+  "mcpServers": {
+    "awsmux": { "command": "/absolute/path/to/awsmux", "args": ["mcp"] }
+  }
+}
+```
+
+**Other MCP clients** (Cursor, Windsurf, Zed, ...): same shape
+everywhere, a stdio server with command `awsmux` and args `["mcp"]`.
 
 The agent gets five structured tools (`list_aws_targets`,
 `plan_aws_operation`, `execute_aws_plan`, `get_aws_execution`,
 `cancel_aws_execution`) instead of a raw shell. Read-only plans execute
-freely. Anything else refuses until a human runs `awsmux approve` and
-hands over the token, which binds to the plan's sha256 hash, so the
-agent cannot alter an approved plan or execute it twice. Want to watch
-an agent hit the boundary with zero blast radius? Run `make fleet-up`,
-`source .tmp/fleet/env.sh`, and register `./bin/awsmux mcp` from that
-shell: the agent gets the 100-account sandbox fleet over MCP.
+freely. Anything else refuses until you run `awsmux approve <plan-id>`
+in your own terminal and hand the agent the one-time token, which binds
+to the plan's sha256 hash, so the agent cannot alter an approved plan
+or execute it twice.
+
+Want to watch an agent hit the boundary with zero blast radius?
+Register the sandbox fleet instead: after `make fleet-up`, point the
+server at the fleet's config via environment variables (values printed
+in `.tmp/fleet/env.sh`):
+
+```sh
+claude mcp add awsmux-fleet \
+  --env AWS_CONFIG_FILE=$PWD/.tmp/fleet/aws-config \
+  --env AWS_SHARED_CREDENTIALS_FILE=$PWD/.tmp/fleet/aws-credentials \
+  --env AWSMUX_HOME=$PWD/.tmp/fleet/home \
+  -- $PWD/bin/awsmux mcp
+```
+
+The agent gets the 100-account LocalStack fleet over MCP; let it break
+anything it likes.
 
 The cost and speed numbers in the table at the top come from exactly
 this setup. One more result from the same benchmark: when an agent was

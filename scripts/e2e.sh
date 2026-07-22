@@ -37,11 +37,12 @@ nd=$($BIN targets --dedupe --format jsonl | wc -l | tr -d ' ')
 $BIN run --format jsonl -- sts get-caller-identity >/dev/null
 
 # 4. Seeding worked: the world-open security group is findable.
-# Capture before grepping: `... | grep -q` would close the pipe on the first
-# match and, under pipefail, fail the still-streaming producer with EPIPE.
+# Capture, then match with [[ ]]: any early-exit pipe reader (grep -q, awk
+# with exit) closes the pipe while the producer is still writing, and under
+# pipefail the producer's EPIPE death (exit 141) fails the whole script.
 sg_out=$($BIN run --profiles '*-prod-*' --format jsonl -- ec2 describe-security-groups \
   --filters Name=ip-permission.cidr,Values=0.0.0.0/0)
-echo "$sg_out" | grep -q legacy-bastion || fail "seeded world-open group not found"
+[[ "$sg_out" == *legacy-bastion* ]] || fail "seeded world-open group not found"
 
 # 5. The approval gate holds: a mutating run without --yes exits 3.
 set +e
@@ -51,16 +52,20 @@ rc=$?
 set -e
 [ "$rc" = "3" ] || fail "mutating run without approval exited $rc, want 3"
 
-# 6. Full plan / approve / apply roundtrip.
-plan_id=$($BIN plan --profiles payments-prod-1 -- ssm put-parameter \
-  --name /e2e/probe --value probe-ok --type String --overwrite \
-  | awk '/^Plan/ {print $2; exit}')
+# 6. Full plan / approve / apply roundtrip. Same rule as step 4: capture
+# each command's full output before parsing so no pipe closes early on a
+# still-writing awsmux (this exact race killed CI with exit 141 when awk's
+# `exit` fired while `plan` was mid-output).
+plan_out=$($BIN plan --profiles payments-prod-1 -- ssm put-parameter \
+  --name /e2e/probe --value probe-ok --type String --overwrite)
+plan_id=$(echo "$plan_out" | awk '/^Plan/ {print $2; exit}')
 [ -n "$plan_id" ] || fail "no plan id in plan output"
-token=$($BIN approve "$plan_id" --yes | awk '/^approval token/ {print $NF}')
+approve_out=$($BIN approve "$plan_id" --yes)
+token=$(echo "$approve_out" | awk '/^approval token/ {print $NF}')
 [ -n "$token" ] || fail "no approval token minted"
 $BIN apply "$plan_id" --approval-token "$token" >/dev/null
 param_out=$($BIN run --profiles payments-prod-1 --format jsonl -- ssm get-parameter \
   --name /e2e/probe --query Parameter.Value)
-echo "$param_out" | grep -q probe-ok || fail "applied parameter not readable back"
+[[ "$param_out" == *probe-ok* ]] || fail "applied parameter not readable back"
 
 echo "e2e: OK ($n targets)"

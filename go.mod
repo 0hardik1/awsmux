@@ -1,4 +1,4 @@
-module awsmux
+module github.com/0hardik1/awsmux
 
 go 1.26.5
 

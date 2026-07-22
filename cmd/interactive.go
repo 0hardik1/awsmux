@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"awsmux/internal/core"
+	"github.com/0hardik1/awsmux/internal/core"
 )
 
 // isTTY reports whether stdin is an interactive terminal.

@@ -13,7 +13,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"awsmux/internal/core"
+	"github.com/0hardik1/awsmux/internal/core"
 )
 
 // ValidFormat reports whether f is "table", "json", or "jsonl".
