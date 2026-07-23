@@ -18,12 +18,12 @@ boundary that even an AI agent with your admin credentials cannot talk
 its way past. The demo above is a real terminal against the bundled
 100-account sandbox fleet; replay it yourself with `make fleet-up`.
 
-**And it is measurably cheaper and faster for agents. In a 150-session
-A/B benchmark (identical Claude Opus 4.8 agents, identical prompts,
-same 100-account fleet), the awsmux arm beat a raw-shell aws CLI arm in
-every cell: 1.3x to 2.9x cheaper, 2.3x to 5.4x faster, a flat 4 turns
-at every fleet size, and up to 7.4x fewer output tokens (all
-differences Holm-adjusted p < 0.05).**
+**And it is measurably cheaper and faster for agents. In a 150-session,
+three-arm benchmark (identical Claude Opus 4.8 agents, identical
+prompts, same 100-account fleet), the awsmux arm beat a raw-shell aws
+CLI arm in every cell: 1.3x to 2.9x cheaper, 2.3x to 5.4x faster, a
+flat 4 turns at every fleet size, and up to 7.4x fewer output tokens
+(cost and token differences all Holm-adjusted p < 0.05).**
 
 | task | fleet | cost per run (cli vs awsmux) | wall time |
 |---|---|---|---|
@@ -47,10 +47,9 @@ make fleet-up && source .tmp/fleet/env.sh
 One make target boots a pinned LocalStack container and provisions a
 fictional 100-account fleet (10 teams, prod and stage, 5 shards, 3
 regions) to break for fun. The real aws CLI talks to a real emulated
-AWS on localhost, every profile is its own account, and what you change
-actually persists. Zero credentials, zero real AWS, zero risk. (The
-old `awsmux demo --synthetic` no-Docker path is gone; the sandbox now
-needs Docker.)
+AWS on localhost, every profile is its own account (plus one planted
+`admin-legacy` duplicate for `--dedupe` to catch), and what you change
+actually persists. Zero credentials, zero real AWS, zero risk.
 
 ```sh
 ./bin/awsmux targets --profiles 'payments-*'     # verified identities, per account
@@ -68,8 +67,10 @@ hunt; the finding disappears for real, because the sandbox is a real
 (emulated) AWS. Try editing the plan file between approve and apply and
 watch the hash check refuse it.
 
-`make e2e` runs this whole storyline as an automated smoke test;
-`make fleet-down` removes the container.
+`make e2e` smoke-tests the same beats end to end (discovery and STS
+verification of all 101 profiles, dedupe, the fleet-wide sweep, the
+world-open hunt, the approval gate, and a full plan / approve / apply
+roundtrip); `make fleet-down` removes the container.
 
 ## Real fleet
 
@@ -103,8 +104,9 @@ jsonl: `config`, `credentials`, or `both`).
 Useful flags: `--concurrency` (default 100: fleet-wide fan-out is the
 point; each in-flight target is one aws CLI subprocess), `--timeout
 30s`, `--max-errors N`,
-`--stop-on-access-denied`, `--dedupe` (collapse profiles that resolve to
-the same account), `--output-dir` (one result file per target),
+`--stop-on-access-denied`, `--dedupe` (collapse targets that resolve to
+the same account, principal, and region), `--output-dir` (one result
+file per target),
 `--interactive` (checkbox target picker). Every run lands in
 `awsmux history` and can be re-run with `awsmux replay`.
 
@@ -187,7 +189,8 @@ kept nearly all of the margin.
 | `unknown` | anything unrecognized | treated as mutating |
 
 Where the verb convention lies, awsmux overrides it: sts calls that mint
-credentials (assume-role*, get-session-token, get-federation-token) and
+credentials (assume-role*, assume-root, get-session-token,
+get-federation-token) and
 s3api operations that write a local outfile (get-object,
 get-object-torrent, select-object-content) are classified `mutating`
 despite their read-style names.
