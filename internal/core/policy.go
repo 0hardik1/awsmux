@@ -13,7 +13,9 @@ import (
 // signatures exactly as written; add unexported helpers in this file freely.
 
 // PolicyVersion is stamped into plans; bump when approval rules change.
-const PolicyVersion = "v1"
+// v2 reclassified s3 mv as destructive, s3 presign as mutating, and made
+// s3 sync --delete escalate to destructive.
+const PolicyVersion = "v2"
 
 // RequiresApproval reports whether a classification needs an approval
 // token: ReadOnly runs freely; Mutating, Destructive, and Unknown all

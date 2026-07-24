@@ -20,6 +20,14 @@ tgt_out=$($BIN targets --format jsonl)
 n=$(echo "$tgt_out" | wc -l | tr -d ' ')
 [ "$n" = "$EXPECT" ] || fail "expected $EXPECT targets, got $n"
 
+# 1a. `targets` exits 0 even when preflight fails, so assert the verified
+# identity itself: every target must carry an account ID and no error.
+if echo "$tgt_out" | grep '"preflight_error"' >/dev/null; then
+  fail "some targets failed STS preflight"
+fi
+nv=$(echo "$tgt_out" | grep -c '"account_id":"[0-9]' || true)
+[ "$nv" = "$EXPECT" ] || fail "expected $EXPECT STS-verified account IDs, got $nv"
+
 # 1b. The fleet writes every profile to both shared files, so each target
 # must be sourced from "both".
 if echo "$tgt_out" | grep -v '"source":"both"' >/dev/null; then
@@ -67,5 +75,34 @@ $BIN apply "$plan_id" --approval-token "$token" >/dev/null
 param_out=$($BIN run --profiles payments-prod-1 --format jsonl -- ssm get-parameter \
   --name /e2e/probe --query Parameter.Value)
 [[ "$param_out" == *probe-ok* ]] || fail "applied parameter not readable back"
+
+# 7. Destructive operations refuse --yes outright (only the plan workflow
+# can run them), which is the rule the storyline's revoke depends on.
+set +e
+$BIN run --profiles payments-prod-1 --yes -- ec2 revoke-security-group-ingress \
+  --group-name legacy-bastion --protocol tcp --port 22 --cidr 0.0.0.0/0 >/dev/null 2>&1
+rc=$?
+set -e
+[ "$rc" = "3" ] || fail "destructive run with --yes exited $rc, want 3"
+
+# 8. Editing an approved plan invalidates it: the hash covers the args, so
+# apply must refuse. The tamper also renames the target group, so a
+# regression here cannot revoke the seeded rule the earlier steps assert.
+destr_out=$($BIN plan --profiles payments-prod-1 -- ec2 revoke-security-group-ingress \
+  --group-name legacy-bastion --protocol tcp --port 22 --cidr 0.0.0.0/0)
+destr_id=$(echo "$destr_out" | awk '/^Plan/ {print $2; exit}')
+[ -n "$destr_id" ] || fail "no plan id in destructive plan output"
+destr_approve_out=$($BIN approve "$destr_id" --yes)
+destr_token=$(echo "$destr_approve_out" | awk '/^approval token/ {print $NF}')
+[ -n "$destr_token" ] || fail "no approval token for destructive plan"
+plan_file="${AWSMUX_HOME:?env.sh did not set AWSMUX_HOME}/plans/$destr_id.json"
+[ -f "$plan_file" ] || fail "plan file $plan_file not found"
+sed 's/legacy-bastion/legacy-bastion-tampered/' "$plan_file" >"$plan_file.tmp"
+mv "$plan_file.tmp" "$plan_file"
+set +e
+$BIN apply "$destr_id" --approval-token "$destr_token" >/dev/null 2>&1
+rc=$?
+set -e
+[ "$rc" = "3" ] || fail "tampered plan applied with exit $rc, want 3"
 
 echo "e2e: OK ($n targets)"

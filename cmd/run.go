@@ -69,7 +69,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return Exitf(core.ExitConfigError, "%s (fix credentials or --exclude the profile)", err)
 	}
 
-	class := core.Classify(service, operation)
+	class := core.ClassifyWithArgs(service, operation, rest)
 	opts := runFlags.exec.options()
 
 	if runFlags.interactive {

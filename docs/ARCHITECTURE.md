@@ -17,7 +17,7 @@ flowchart LR
     subgraph CORE [internal/core: the engine]
         DISC["discovery<br/>config + credentials files,<br/>globs, region expansion"]
         IDEN["identity<br/>STS preflight,<br/>dedup, 5m cache"]
-        CLS["classify<br/>verb risk classes"]
+        CLS["classify<br/>verb risk classes,<br/>arg escalation"]
         PLAN["plan + policy<br/>sha256 hash,<br/>approval tokens"]
         EXEC["executor<br/>worker pool, timeouts,<br/>failure taxonomy"]
         STORE["store<br/>plans, executions,<br/>index.jsonl"]
@@ -135,15 +135,21 @@ container (a `.seeded` marker holds the container ID, so a recreated
 container reseeds), most importantly the payments-prod-1 security group
 that is open to the world.
 
-`make e2e` runs `scripts/e2e.sh` against that fleet: discovery with STS
-verification of every profile (each sourced from both shared files),
-a healthy `doctor` report, dedupe of the planted duplicate,
-fleet-wide read-only fan-out, the approval gate refusing an unapproved
-mutation with exit 3, and a full plan / approve / apply roundtrip. CI
-runs the identical script in the "e2e (LocalStack)" job on ubuntu. The
-real engine, policy, and MCP server run byte-for-byte identical code
-against the fleet. Reset with `make fleet-down` (container) and
-`make clean` (files).
+`make e2e` builds the binary, provisions the fleet, and runs
+`scripts/e2e.sh` against it. That script is the canonical list of what
+CI covers; today it asserts discovery of every profile (each sourced
+from both shared files) with an STS-verified account ID and no
+preflight error, a healthy `doctor` report, dedupe of the planted
+duplicate, fleet-wide read-only fan-out, the seeded world-open security
+group being findable, the approval gate refusing an unapproved mutation
+with exit 3, a full plan / approve / apply roundtrip read back through
+the fleet, a destructive operation refusing `--yes` with exit 3, and an
+edited plan refused by its hash at apply time. Profile counts come from
+`AWSMUX_FLEET_SIZE` (101 by default), so `FLEET_TEAMS` / `FLEET_SHARDS`
+shrink the suite without editing it. CI runs the identical script in
+the "e2e (LocalStack)" job on ubuntu. The real engine, policy, and MCP
+server run byte-for-byte identical code against the fleet. Reset with
+`make fleet-down` (container) and `make clean` (files).
 
 ## State
 
@@ -154,6 +160,7 @@ cache. Plans keep only the sha256 of their approval token.
 ## Token-efficiency methodology
 
 The cost and speed numbers in the README come from a 150-session,
-three-arm A/B benchmark with hermetic tool surfaces, ground-truth
-grading, and permutation-test statistics. The full design, results,
-and caveats live in [BENCHMARK.md](BENCHMARK.md).
+three-arm benchmark (cli, awsmux, and a mixed arm with both surfaces)
+with hermetic tool surfaces, ground-truth grading, and permutation-test
+statistics. The full design, results, and caveats live in
+[BENCHMARK.md](BENCHMARK.md).
