@@ -93,7 +93,7 @@ func Execute(ctx context.Context, targets []Target, service, operation string, a
 		Service:        service,
 		Operation:      operation,
 		Args:           args,
-		Classification: Classify(service, operation),
+		Classification: ClassifyWithArgs(service, operation, args),
 		StartedAt:      time.Now().UTC(),
 		Results:        make([]TargetResult, len(targets)),
 	}

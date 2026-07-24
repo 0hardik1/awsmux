@@ -36,7 +36,7 @@ func NewPlan(service, operation string, args []string, targets []Target, ttl tim
 	if ttl <= 0 {
 		ttl = DefaultPlanTTL
 	}
-	class := Classify(service, operation)
+	class := ClassifyWithArgs(service, operation, args)
 	now := time.Now().UTC()
 	p := &Plan{
 		ID:               NewID("plan"),

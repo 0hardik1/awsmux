@@ -74,15 +74,19 @@ var verbClass = map[string]Classification{
 var twoWordReadOnlyVerbs = []string{"batch-get", "batch-describe"}
 
 // s3Class covers aws s3 subcommands, which do not follow verb-noun naming.
+// Two entries are stricter than they look: mv deletes the source object after
+// copying, so it is destructive like rm, and presign mints a bearer URL that
+// hands the object to anyone holding the link for as long as --expires-in
+// says, which is a credential-shaped side effect, not a read.
 var s3Class = map[string]Classification{
 	"ls":      ClassReadOnly,
-	"presign": ClassReadOnly,
 	"rm":      ClassDestructive,
 	"rb":      ClassDestructive,
+	"mv":      ClassDestructive,
 	"cp":      ClassMutating,
 	"sync":    ClassMutating,
 	"mb":      ClassMutating,
-	"mv":      ClassMutating,
+	"presign": ClassMutating,
 }
 
 // stsClass overrides the verb rules for sts: the "get" prefix would make
@@ -111,15 +115,69 @@ var s3apiLocalWrite = map[string]Classification{
 	"select-object-content": ClassMutating,
 }
 
+// argEscalation raises an operation's class when a flag is present.
+type argEscalation struct {
+	flag  string
+	class Classification
+}
+
+// argEscalations covers operations whose risk lives in an argument rather
+// than in the name: "aws s3 sync" copies, but "s3 sync --delete" removes
+// destination objects that no longer exist at the source. Keyed by
+// "<service> <operation>", both lowercase.
+var argEscalations = map[string][]argEscalation{
+	"s3 sync": {{flag: "--delete", class: ClassDestructive}},
+}
+
+// riskRank orders classifications so an escalation can only ever raise the
+// risk. Unknown ranks with mutating, which is how policy treats it.
+var riskRank = map[Classification]int{
+	ClassReadOnly:    0,
+	ClassMutating:    1,
+	ClassUnknown:     1,
+	ClassDestructive: 2,
+}
+
+// ClassifyWithArgs returns the risk class for a full AWS CLI invocation. It
+// starts from Classify and raises the class when an argument makes the call
+// more dangerous than its name implies (see argEscalations); it never lowers
+// what Classify returned. Every caller holding the operation's args should
+// use this rather than Classify, so a flag cannot smuggle a deletion past
+// the gate that the bare operation name would have triggered.
+func ClassifyWithArgs(service, operation string, args []string) Classification {
+	class := Classify(service, operation)
+	key := strings.ToLower(strings.TrimSpace(service)) + " " + strings.ToLower(strings.TrimSpace(operation))
+	for _, esc := range argEscalations[key] {
+		if riskRank[esc.class] > riskRank[class] && hasFlag(args, esc.flag) {
+			class = esc.class
+		}
+	}
+	return class
+}
+
+// hasFlag reports whether args contain the flag, in either the bare
+// ("--delete") or joined ("--delete=true") form.
+func hasFlag(args []string, flag string) bool {
+	for _, a := range args {
+		if a == flag || strings.HasPrefix(a, flag+"=") {
+			return true
+		}
+	}
+	return false
+}
+
 // Classify returns the risk class for an AWS CLI service + operation pair.
+// Callers that also have the operation's args should use ClassifyWithArgs,
+// which additionally catches flags that raise the risk.
 //
 // Strategy: classify by the operation's leading verb (text before the first
 // hyphen, compared lowercase), with small service override tables where the
 // verb convention lies: sts credential-minting calls are mutating despite
 // their read-ish names, s3api operations that write a local outfile are
 // mutating despite their get prefix, and aws s3 subcommands are mapped
-// explicitly. Anything unrecognized is ClassUnknown, which policy treats
-// like mutating.
+// explicitly (mv is destructive because it deletes the source, presign is
+// mutating because it mints a bearer URL). Anything unrecognized is
+// ClassUnknown, which policy treats like mutating.
 func Classify(service, operation string) Classification {
 	svc := strings.ToLower(strings.TrimSpace(service))
 	op := strings.ToLower(strings.TrimSpace(operation))

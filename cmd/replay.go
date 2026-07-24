@@ -85,7 +85,7 @@ func runReplay(cmd *cobra.Command, args []string) error {
 
 	// A replay is a new execution: re-classify fresh and enforce the same
 	// gates as `awsmux run`, never trusting the stored classification.
-	cls := core.Classify(old.Service, old.Operation)
+	cls := core.ClassifyWithArgs(old.Service, old.Operation, old.Args)
 	switch {
 	case cls == core.ClassDestructive:
 		return Exitf(core.ExitApprovalRequired,

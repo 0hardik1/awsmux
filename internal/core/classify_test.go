@@ -48,13 +48,16 @@ func TestClassify(t *testing.T) {
 		{"s3api", "get-bucket-policy", ClassReadOnly},
 		{"s3api", "head-object", ClassReadOnly},
 
-		// aws s3 subcommands are mapped explicitly.
+		// aws s3 subcommands are mapped explicitly. mv deletes the source
+		// and presign mints a bearer URL, so neither runs freely.
 		{"s3", "ls", ClassReadOnly},
-		{"s3", "presign", ClassReadOnly},
 		{"s3", "rm", ClassDestructive},
 		{"s3", "rb", ClassDestructive},
+		{"s3", "mv", ClassDestructive},
 		{"s3", "cp", ClassMutating},
 		{"s3", "sync", ClassMutating},
+		{"s3", "mb", ClassMutating},
+		{"s3", "presign", ClassMutating},
 
 		// Two-word read verbs must not split at the first hyphen.
 		{"dynamodb", "batch-get-item", ClassReadOnly},
@@ -67,6 +70,38 @@ func TestClassify(t *testing.T) {
 	for _, tt := range tests {
 		if got := Classify(tt.service, tt.operation); got != tt.want {
 			t.Errorf("Classify(%q, %q) = %q, want %q", tt.service, tt.operation, got, tt.want)
+		}
+	}
+}
+
+func TestClassifyWithArgs(t *testing.T) {
+	tests := []struct {
+		name      string
+		service   string
+		operation string
+		args      []string
+		want      Classification
+	}{
+		{"sync without --delete stays mutating", "s3", "sync",
+			[]string{"s3://a", "s3://b"}, ClassMutating},
+		{"sync --delete escalates to destructive", "s3", "sync",
+			[]string{"s3://a", "s3://b", "--delete"}, ClassDestructive},
+		{"joined flag form also escalates", "s3", "sync",
+			[]string{"s3://a", "s3://b", "--delete=true"}, ClassDestructive},
+		{"a --delete-lookalike does not escalate", "s3", "sync",
+			[]string{"s3://a", "s3://b", "--delete-after"}, ClassMutating},
+		{"case and whitespace insensitive", " S3 ", " Sync ",
+			[]string{"--delete"}, ClassDestructive},
+		{"escalation never lowers an existing class", "s3", "rm",
+			[]string{"s3://a"}, ClassDestructive},
+		{"unrelated operations are unaffected by --delete", "ec2", "describe-instances",
+			[]string{"--delete"}, ClassReadOnly},
+		{"nil args match bare Classify", "s3", "sync", nil, ClassMutating},
+	}
+	for _, tt := range tests {
+		if got := ClassifyWithArgs(tt.service, tt.operation, tt.args); got != tt.want {
+			t.Errorf("%s: ClassifyWithArgs(%q, %q, %v) = %q, want %q",
+				tt.name, tt.service, tt.operation, tt.args, got, tt.want)
 		}
 	}
 }
