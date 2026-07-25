@@ -195,7 +195,11 @@ func ResolveTargetsWithOrg(ctx context.Context, sel Selector) ([]Target, *OrgSel
 	if sel.UsesOrg() {
 		targets, orgSel, err = filterByOrg(ctx, sel, targets)
 		if err != nil {
-			return nil, nil, err
+			// orgSel may be non-nil here (a zero-match error still carries
+			// the computed Matched/Unreachable), so it is propagated rather
+			// than discarded: callers need it to honor the error's own
+			// --show-unreachable hint without re-enumerating the org.
+			return nil, orgSel, err
 		}
 	}
 
@@ -241,6 +245,15 @@ func filterByOrg(ctx context.Context, sel Selector, targets []Target) ([]Target,
 	reached := make(map[string]bool)
 	kept := targets[:0]
 	for _, t := range targets {
+		if t.PreflightErr != "" {
+			// An unverified target has no account id to join on. Keep it
+			// rather than drop it, so the blocking error CheckVerified
+			// raises survives; dropping it would quietly narrow the
+			// fan-out and report its account, if any, as unreachable
+			// when in fact no account was ever established.
+			kept = append(kept, t)
+			continue
+		}
 		if !matchedSet[t.AccountID] {
 			continue
 		}
@@ -258,10 +271,11 @@ func filterByOrg(ctx context.Context, sel Selector, targets []Target) ([]Target,
 		}
 	}
 
+	orgSel := &OrgSelection{Org: org, Matched: matchedIDs, Unreachable: unreachable}
 	if len(kept) == 0 {
-		return nil, nil, noOrgMatchError(sel, len(matchedIDs))
+		return nil, orgSel, noOrgMatchError(sel, len(matchedIDs))
 	}
-	return kept, &OrgSelection{Org: org, Matched: matchedIDs, Unreachable: unreachable}, nil
+	return kept, orgSel, nil
 }
 
 // noOrgMatchError distinguishes the two situations that otherwise look

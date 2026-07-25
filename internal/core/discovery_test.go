@@ -524,7 +524,7 @@ func TestResolveTargetsOrgZeroMatchExplainsCoverage(t *testing.T) {
 
 	// eng/prod holds two accounts; drop the one profile that reaches it so
 	// the message has to distinguish "empty OU" from "no local profile".
-	_, _, err := ResolveTargetsWithOrg(context.Background(), Selector{
+	_, orgSel, err := ResolveTargetsWithOrg(context.Background(), Selector{
 		Profiles: []string{"beta"},
 		OU:       []string{"eng/prod"},
 	})
@@ -536,6 +536,95 @@ func TestResolveTargetsOrgZeroMatchExplainsCoverage(t *testing.T) {
 		if !strings.Contains(msg, want) {
 			t.Errorf("error message missing %q:\n%s", want, msg)
 		}
+	}
+	// The error's own hint tells the caller to list the unreachable accounts;
+	// the selection carrying them must survive the error return, or nothing
+	// can honor that hint without re-enumerating the org from scratch.
+	if orgSel == nil {
+		t.Fatal("OrgSelection must be populated on a zero-match error so callers can honor the --show-unreachable hint")
+	}
+	if len(orgSel.Unreachable) != 2 {
+		t.Errorf("Unreachable = %+v, want both eng/prod accounts", orgSel.Unreachable)
+	}
+}
+
+// TestResolveTargetsOrgKeepsPreflightErroredTargets verifies that a target
+// whose identity preflight failed is carried through the org filter
+// untouched rather than dropped. Such a target has no verified AccountID to
+// join on; dropping it would turn a blocking preflight failure into a
+// silently narrower fan-out, and would misreport its account as
+// "unreachable" when in fact no account was ever established.
+func TestResolveTargetsOrgKeepsPreflightErroredTargets(t *testing.T) {
+	isolateSharedFiles(t)
+	cfg := writeSharedFile(t, "config", `[profile alpha]
+region = us-east-1
+
+[profile broken]
+region = us-east-1
+`)
+	t.Setenv("AWS_CONFIG_FILE", cfg)
+	t.Setenv("AWSMUX_HOME", t.TempDir())
+
+	stub := filepath.Join(t.TempDir(), "aws")
+	script := `#!/bin/sh
+svc=$1
+op=$2
+case "$svc $op" in
+  "sts get-caller-identity")
+    case "$*" in
+      *"--profile alpha"*)  echo '{"UserId":"AIDAA","Account":"111122223333","Arn":"arn:aws:iam::111122223333:user/alpha"}' ;;
+      *"--profile broken"*) echo 'ExpiredTokenException: token expired' >&2; exit 254 ;;
+      *) echo "unexpected sts profile: $*" >&2; exit 1 ;;
+    esac
+    ;;
+  "organizations describe-organization")
+    echo '{"Organization":{"MasterAccountId":"999988887777"}}' ;;
+  "organizations list-roots")
+    echo '{"Roots":[{"Id":"r-root"}]}' ;;
+  "organizations list-accounts-for-parent")
+    case "$*" in
+      *ou-prod*) echo '{"Accounts":[{"Id":"111122223333","Name":"prod-web","Status":"ACTIVE"}]}' ;;
+      *)         echo '{"Accounts":[]}' ;;
+    esac
+    ;;
+  "organizations list-organizational-units-for-parent")
+    case "$*" in
+      *r-root*) echo '{"OrganizationalUnits":[{"Id":"ou-eng","Name":"eng"}]}' ;;
+      *ou-eng*) echo '{"OrganizationalUnits":[{"Id":"ou-prod","Name":"prod"}]}' ;;
+      *)        echo '{"OrganizationalUnits":[]}' ;;
+    esac
+    ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+`
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	t.Setenv(AWSBinEnv, stub)
+
+	targets, _, err := ResolveTargetsWithOrg(context.Background(), Selector{OU: []string{"eng/prod"}})
+	if err != nil {
+		t.Fatalf("ResolveTargetsWithOrg: %v", err)
+	}
+	if len(targets) != 2 {
+		t.Fatalf("got %d targets, want 2 (the matched account plus the unverified one): %+v", len(targets), targets)
+	}
+
+	var broken *Target
+	for i := range targets {
+		if targets[i].Profile == "broken" {
+			broken = &targets[i]
+		}
+	}
+	if broken == nil {
+		t.Fatal("preflight-errored target was dropped by the org filter instead of carried through")
+	}
+	if broken.PreflightErr == "" {
+		t.Error("errored target lost its PreflightErr")
+	}
+
+	if err := CheckVerified(targets); err == nil {
+		t.Fatal("CheckVerified must still block on the unverified target; the org filter must not silently narrow the fan-out around it")
 	}
 }
 
