@@ -143,11 +143,13 @@ type OrgOptions struct {
 	WantTags bool
 }
 
-// sourceKey returns a stable key identifying the credentials this enumeration
-// will use. Caches are scoped by source, so the same org is never returned for
-// different credentials.
+// sourceKey returns a collision-proof key identifying the credentials this
+// enumeration will use. Caches are scoped by source, so the same org is never
+// returned for different credentials. A plain separator is not enough because
+// profile names come from the shared-config INI parser, which permits arbitrary
+// characters including pipe; a length-prefixed encoding eliminates ambiguity.
 func (o OrgOptions) sourceKey() string {
-	return o.Profile + "|" + o.AssumeRole
+	return fmt.Sprintf("%d:%s|%s", len(o.Profile), o.Profile, o.AssumeRole)
 }
 
 // orgClient issues aws organizations calls under one credential context.
@@ -466,7 +468,10 @@ func saveOrgCache(o *Org) {
 // API failure is retried on the next call rather than remembered.
 //
 // A tree cached by an OU-only query carries no tags, so it is not reused to
-// answer a tag filter; that check is what TagsFetched exists for.
+// answer a tag filter; that check is what TagsFetched exists for. A tree
+// cached under different credentials is not reused because it belongs to a
+// different organization. Both mismatches behave like staleness: re-enumerate
+// and overwrite the cache.
 func LoadOrg(ctx context.Context, opts OrgOptions) (*Org, error) {
 	if !opts.Refresh {
 		if o := loadOrgCache(); o != nil &&

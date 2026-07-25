@@ -550,8 +550,8 @@ func TestLoadOrgScopedByCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first LoadOrg: %v", err)
 	}
-	if org1.Source != "mgmt|" {
-		t.Errorf("first org.Source = %q, want mgmt|", org1.Source)
+	if org1.Source != "4:mgmt|" {
+		t.Errorf("first org.Source = %q, want 4:mgmt|", org1.Source)
 	}
 	first := len(readCalls(t, logPath))
 
@@ -562,10 +562,29 @@ func TestLoadOrgScopedByCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second LoadOrg: %v", err)
 	}
-	if org2.Source != "dev|" {
-		t.Errorf("second org.Source = %q, want dev|", org2.Source)
+	if org2.Source != "3:dev|" {
+		t.Errorf("second org.Source = %q, want 3:dev|", org2.Source)
 	}
 	if got := len(readCalls(t, logPath)); got <= first {
 		t.Fatal("different profile reused cache from different profile")
+	}
+}
+
+func TestSourceKeyCollisionProof(t *testing.T) {
+	// Verify that two distinct (Profile, AssumeRole) pairs that could collide
+	// with a naive pipe-separated encoding produce different keys. This proves
+	// the length-prefixed encoding is necessary, since profile names can contain
+	// pipes from the INI parser.
+	k1 := OrgOptions{Profile: "a|b", AssumeRole: ""}.sourceKey()
+	k2 := OrgOptions{Profile: "a", AssumeRole: "b|"}.sourceKey()
+
+	if k1 == k2 {
+		t.Errorf("collision: both pairs produced key %q", k1)
+	}
+	if k1 != "3:a|b|" {
+		t.Errorf("key1 = %q, want 3:a|b|", k1)
+	}
+	if k2 != "1:a|b|" {
+		t.Errorf("key2 = %q, want 1:a|b|", k2)
 	}
 }
