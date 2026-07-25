@@ -8,6 +8,27 @@
 
 **Tech Stack:** Go 1.26, stdlib plus cobra only. Tests are plain stdlib `testing`, driven through the `AWSMUX_AWS_BIN` stub-binary seam, needing no network and no Docker.
 
+## Amendments made during execution
+
+Review caught defects in this plan's own code. The committed implementation is
+authoritative where the two disagree; the full rulings live in the execution
+ledger at `.superpowers/sdd/2026-07-25-org-aware-discovery/progress.md`.
+
+- **Task 1, `matchTags`:** amended inline below. A plain map lookup let an
+  untagged account match an empty-valued tag filter. Uses a comma-ok lookup.
+- **Task 3, org cache:** amended inline below. The cache was a single unkeyed
+  blob, so switching organizations inside the TTL served the wrong tree. `Org`
+  now carries a collision-proof `Source`.
+- **Task 4, `filterByOrg`:** **not amended below, read this before reusing that
+  code.** Two defects were found and fixed in the implementation. First, the
+  loop dropped targets whose preflight failed, which removed them before
+  `CheckVerified` could block and turned a hard identity failure into a quietly
+  narrower fan-out; errored targets must be carried through untouched. Second,
+  the zero-match check keyed on `len(kept)`, which those carried-through targets
+  inflate, so the coverage-explaining error could never fire once any preflight
+  failed; the decision must use a counter of targets that actually matched, and
+  the message must mention any targets it could not evaluate.
+
 ## Global Constraints
 
 - **Dependencies: stdlib plus cobra, nothing else.** Do not add a module dependency for INI, JSON-RPC, AWS SDK, or test assertions. This is a design rule, not an accident.
