@@ -278,3 +278,55 @@ func TestNewID(t *testing.T) {
 		}
 	}
 }
+
+func TestComputeHashCoversOrgMetadata(t *testing.T) {
+	base := func() *Plan {
+		return &Plan{
+			ID:        "plan-test",
+			Service:   "ec2",
+			Operation: "describe-instances",
+			Targets: []Target{{
+				ID:        "alpha@us-east-1",
+				Profile:   "alpha",
+				Region:    "us-east-1",
+				AccountID: "111122223333",
+				Principal: "arn:aws:iam::111122223333:user/alpha",
+				OUPath:    "eng/prod",
+			}},
+			Classification: ClassReadOnly,
+			PolicyVersion:  PolicyVersion,
+			ExpiresAt:      time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC),
+		}
+	}
+
+	// OUPath and OrgAccountName are rendered in the plan a human approves, so
+	// editing either after approval must break the hash.
+	p := base()
+	original := p.ComputeHash()
+
+	moved := base()
+	moved.Targets[0].OUPath = "eng/dev"
+	if moved.ComputeHash() == original {
+		t.Error("changing OUPath did not change the plan hash")
+	}
+
+	renamed := base()
+	renamed.Targets[0].OrgAccountName = "prod-web"
+	if renamed.ComputeHash() == original {
+		t.Error("changing OrgAccountName did not change the plan hash")
+	}
+
+	// Same inputs must still hash identically.
+	if base().ComputeHash() != original {
+		t.Error("hash is not reproducible for identical plans")
+	}
+}
+
+func TestPolicyVersionIsV3(t *testing.T) {
+	// Bumped when the hash payload changed to cover org metadata. Plans
+	// stored under an earlier version fail CheckApproval, which is the
+	// intended fail-closed behavior.
+	if PolicyVersion != "v3" {
+		t.Errorf("PolicyVersion = %q, want v3", PolicyVersion)
+	}
+}
