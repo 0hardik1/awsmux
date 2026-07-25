@@ -330,23 +330,75 @@ func doctorEnvNote(envVar string) string {
 	return " (set via " + envVar + ")"
 }
 
+// renderTargetTable prints the target table, adding an OU column only when an
+// org selector actually filled one in, so ordinary runs keep their layout.
 func renderTargetTable(w io.Writer, targets []core.Target) error {
-	tw := new(tabwriter.Writer).Init(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "ID\tPROFILE\tACCOUNT\tREGION\tPRINCIPAL\tSOURCE\tNOTES")
+	withOU := false
 	for _, t := range targets {
+		if t.OUPath != "" || t.OrgAccountName != "" {
+			withOU = true
+			break
+		}
+	}
+
+	tw := new(tabwriter.Writer).Init(w, 0, 4, 2, ' ', 0)
+	if withOU {
+		fmt.Fprintln(tw, "ID\tPROFILE\tACCOUNT\tREGION\tPRINCIPAL\tSOURCE\tOU\tNOTES")
+	} else {
+		fmt.Fprintln(tw, "ID\tPROFILE\tACCOUNT\tREGION\tPRINCIPAL\tSOURCE\tNOTES")
+	}
+	for _, t := range targets {
+		if withOU {
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				t.ID, t.Profile, orDash(t.AccountID), orDash(t.Region),
+				orDash(shortPrincipal(t.Principal)), orDash(string(t.Source)),
+				orDash(t.OUPath), targetNotes(t))
+			continue
+		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			t.ID,
-			t.Profile,
-			orDash(t.AccountID),
-			orDash(t.Region),
-			orDash(shortPrincipal(t.Principal)),
-			orDash(string(t.Source)),
+			t.ID, t.Profile, orDash(t.AccountID), orDash(t.Region),
+			orDash(shortPrincipal(t.Principal)), orDash(string(t.Source)),
 			targetNotes(t))
 	}
 	if err := tw.Flush(); err != nil {
 		return fmt.Errorf("rendering target table: %w", err)
 	}
 	return nil
+}
+
+// unreachablePreview is how many accounts the summary names before eliding.
+const unreachablePreview = 3
+
+// RenderUnreachable writes the coverage summary for org accounts that matched
+// the selector but that no local profile reaches. It writes nothing when
+// there are none, so callers can always call it. Knowing that an OU holds 140
+// accounts you can reach 37 of is the fact worth having before a fan-out.
+func RenderUnreachable(w io.Writer, accts []core.OrgAccount, showAll bool) error {
+	if len(accts) == 0 {
+		return nil
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d accounts matched the selector but have no local profile:\n", len(accts))
+
+	shown := accts
+	if !showAll && len(shown) > unreachablePreview {
+		shown = shown[:unreachablePreview]
+	}
+	for _, a := range shown {
+		fmt.Fprintf(&b, "  %s (%s)", a.ID, a.Name)
+		if a.OUPath != "" {
+			fmt.Fprintf(&b, " in %s", a.OUPath)
+		}
+		if a.Status != "" && a.Status != "ACTIVE" {
+			fmt.Fprintf(&b, " [%s]", a.Status)
+		}
+		b.WriteString("\n")
+	}
+	if n := len(accts) - len(shown); n > 0 {
+		fmt.Fprintf(&b, "  +%d more; pass --show-unreachable to list them all\n", n)
+	}
+	_, err := io.WriteString(w, b.String())
+	return err
 }
 
 func shortPrincipal(p string) string {
