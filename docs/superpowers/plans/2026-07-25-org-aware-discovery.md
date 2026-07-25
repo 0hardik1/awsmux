@@ -126,6 +126,11 @@ func TestMatchAccountNoTagsOnAccount(t *testing.T) {
 	if MatchAccount(acct, nil, map[string]string{"env": "prod"}) {
 		t.Error("account with no tags satisfied a tag filter; must fail closed")
 	}
+	// A filter requesting an empty value must not match a missing key: a nil
+	// map returns "" for every lookup, so a single-value lookup would match.
+	if MatchAccount(acct, nil, map[string]string{"env": ""}) {
+		t.Error("account with no tags matched an empty-valued tag filter; must fail closed")
+	}
 }
 ```
 
@@ -234,12 +239,14 @@ func matchOUAny(patterns []string, ouPath string) bool {
 	return false
 }
 
-// matchTags reports whether the account carries every required tag pair. An
-// account with no tags satisfies only an empty requirement, so a tag filter
-// against an untagged account fails closed.
+// matchTags reports whether the account carries every required tag pair. The
+// key must be present and its value must match, so an account whose tags were
+// never fetched never satisfies a tag filter. The comma-ok lookup matters: a
+// nil map returns "" for every key, so a plain lookup would let an account
+// with no tags match a filter requesting an empty value.
 func matchTags(acct OrgAccount, want map[string]string) bool {
 	for k, v := range want {
-		if acct.Tags[k] != v {
+		if val, ok := acct.Tags[k]; !ok || val != v {
 			return false
 		}
 	}
