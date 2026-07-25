@@ -35,12 +35,43 @@ func TestRenderTargetTableShowsOUColumnWithOrgData(t *testing.T) {
 		t.Fatalf("RenderTargets: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "OU") || !strings.Contains(out, "eng/prod") {
-		t.Errorf("OU column missing:\n%s", out)
+	if !strings.Contains(out, "eng/prod") {
+		t.Errorf("OU value missing:\n%s", out)
 	}
-	// A root-level account renders as a dash, never as blank.
-	if !strings.Contains(out, "-") {
-		t.Errorf("empty OU path should render as a dash:\n%s", out)
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) < 3 {
+		t.Fatalf("expected a header and two rows:\n%s", out)
+	}
+	// Mirror image of the SOURCE-contains-"OU" bug: strings.Contains(out, "OU")
+	// would pass vacuously since "SOURCE" is always in the header, whether or
+	// not an OU column exists. Require an exact "OU" header token instead.
+	ouIdx := -1
+	for i, col := range strings.Fields(lines[0]) {
+		if col == "OU" {
+			ouIdx = i
+		}
+	}
+	if ouIdx == -1 {
+		t.Fatalf("OU column missing from header:\n%s", out)
+	}
+	// strings.Contains(out, "-") is equally vacuous: hyphens appear in
+	// region names (us-east-1) and principal ARNs regardless of the OU
+	// column. Find beta's row (its OUPath is "") and check the dash lands
+	// specifically in the OU column, proving the empty path renders as a
+	// dash rather than blank.
+	var betaCols []string
+	for _, line := range lines[1:] {
+		cols := strings.Fields(line)
+		if len(cols) > 0 && cols[0] == "beta" {
+			betaCols = cols
+			break
+		}
+	}
+	if betaCols == nil {
+		t.Fatalf("beta row not found:\n%s", out)
+	}
+	if ouIdx >= len(betaCols) || betaCols[ouIdx] != "-" {
+		t.Errorf("empty OU path should render as a dash in the OU column (index %d):\n%s", ouIdx, out)
 	}
 }
 
