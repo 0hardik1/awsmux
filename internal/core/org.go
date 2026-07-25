@@ -265,8 +265,9 @@ func enumerateOrg(ctx context.Context, opts OrgOptions) (*Org, error) {
 		Accounts:        make(map[string]OrgAccount),
 		FetchedAt:       time.Now().UTC(),
 	}
+	visited := make(map[string]bool)
 	for _, r := range roots.Roots {
-		if err := c.walk(ctx, r.ID, "", org); err != nil {
+		if err := c.walk(ctx, r.ID, "", org, visited); err != nil {
 			return nil, err
 		}
 	}
@@ -281,8 +282,19 @@ func enumerateOrg(ctx context.Context, opts OrgOptions) (*Org, error) {
 }
 
 // walk records every account directly under parentID at ouPath, then recurses
-// into each child OU.
-func (c orgClient) walk(ctx context.Context, parentID, ouPath string, org *Org) error {
+// into each child OU. visited guards against a cyclic OU tree: real AWS
+// Organizations cannot produce one, but the aws CLI seam this talks to can be
+// anything (LocalStack, a test stub, AWSMUX_AWS_BIN), and an unguarded
+// recursion there would spawn aws subprocesses forever, an unkillable hang
+// inside `awsmux mcp`. A repeat is a hard failure, not a skip: skipping it
+// would return a partial tree, and callers read a missing account as "not
+// selected", which would silently shrink a fan-out.
+func (c orgClient) walk(ctx context.Context, parentID, ouPath string, org *Org, visited map[string]bool) error {
+	if visited[parentID] {
+		return fmt.Errorf("organizations tree walk: parent %s appears more than once, cyclic OU structure", parentID)
+	}
+	visited[parentID] = true
+
 	var accts struct {
 		Accounts []struct {
 			ID     string `json:"Id"`
@@ -316,7 +328,7 @@ func (c orgClient) walk(ctx context.Context, parentID, ouPath string, org *Org) 
 		if ouPath != "" {
 			child = ouPath + "/" + ou.Name
 		}
-		if err := c.walk(ctx, ou.ID, child, org); err != nil {
+		if err := c.walk(ctx, ou.ID, child, org, visited); err != nil {
 			return err
 		}
 	}

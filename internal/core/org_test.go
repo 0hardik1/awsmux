@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMatchOUPath(t *testing.T) {
@@ -102,7 +103,11 @@ func TestMatchAccountNoTagsOnAccount(t *testing.T) {
 
 // writeOrgStub installs a stand-in aws CLI that answers the organizations and
 // sts calls enumeration makes, and appends every invocation to a log file so
-// tests can assert on call counts and on which flags were passed.
+// tests can assert on call counts, on which flags were passed, and on which
+// credentials the child process actually saw (AWS_ACCESS_KEY_ID is logged
+// alongside the args, so a test can tell whether an assumed role's
+// credentials really reached the organizations calls, not just whether
+// --profile was absent).
 //
 // The org it describes:
 //
@@ -122,7 +127,7 @@ func writeOrgStub(t *testing.T) (stubPath, logPath string) {
 	logPath = filepath.Join(dir, "calls.log")
 
 	script := `#!/bin/sh
-echo "$@" >> ` + logPath + `
+echo "AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID $@" >> ` + logPath + `
 # Strip the global flags awsmux appends so positional matching is stable.
 svc=$1
 op=$2
@@ -261,6 +266,10 @@ func TestEnumerateOrgFetchesTagsWhenWanted(t *testing.T) {
 }
 
 func TestEnumerateOrgAssumesRoleAndDropsProfile(t *testing.T) {
+	// A clean baseline: this test asserts on the exact credential value the
+	// organizations calls saw, so an ambient AWS_ACCESS_KEY_ID on the machine
+	// running the test must not be able to interfere.
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
 	stub, logPath := writeOrgStub(t)
 	t.Setenv(AWSBinEnv, stub)
 
@@ -285,15 +294,24 @@ func TestEnumerateOrgAssumesRoleAndDropsProfile(t *testing.T) {
 	}
 	// Every organizations call must run on the assumed credentials, so none
 	// may carry --profile: a profile flag overrides the environment
-	// credentials and would silently enumerate as the wrong principal.
+	// credentials and would silently enumerate as the wrong principal. It is
+	// not enough to check --profile is absent though: that alone would also
+	// pass if the credentials were simply dropped on the floor, and
+	// enumeration would then silently run as whatever ambient identity the
+	// process happens to have. Assert the assumed credentials themselves
+	// actually reached the child process.
 	for _, c := range calls[1:] {
 		if strings.Contains(c, "--profile") {
 			t.Errorf("organizations call carried --profile under an assumed role: %q", c)
+		}
+		if !strings.Contains(c, "AWS_ACCESS_KEY_ID=ASIASTUB") {
+			t.Errorf("organizations call did not see the assumed credentials: %q", c)
 		}
 	}
 }
 
 func TestEnumerateOrgUsesProfileWithoutAssumeRole(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
 	stub, logPath := writeOrgStub(t)
 	t.Setenv(AWSBinEnv, stub)
 
@@ -307,6 +325,11 @@ func TestEnumerateOrgUsesProfileWithoutAssumeRole(t *testing.T) {
 		}
 		if !strings.Contains(c, "--profile mgmt") {
 			t.Errorf("call missing --profile mgmt: %q", c)
+		}
+		// No role was assumed, so no assumed credentials should ever reach
+		// the child process; the calls run as the profile's own identity.
+		if strings.Contains(c, "AWS_ACCESS_KEY_ID=ASIASTUB") {
+			t.Errorf("call carried assumed-role credentials without an assumed role: %q", c)
 		}
 	}
 }
@@ -329,5 +352,71 @@ func TestEnumerateOrgFailsClosedOnAPIError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "AccessDeniedException") {
 		t.Errorf("error should surface the API message, got: %v", err)
+	}
+}
+
+// writeCyclicOrgStub installs a stand-in aws CLI whose OU tree loops: every
+// parent's child OU list names ou-loop, including ou-loop's own. Real AWS
+// Organizations cannot produce this, but the aws CLI seam enumeration talks
+// to can be anything (LocalStack, a test stub, or a future bug), so
+// enumerateOrg must fail closed on a repeat rather than recurse forever.
+func writeCyclicOrgStub(t *testing.T) (stubPath, logPath string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script stub")
+	}
+	dir := t.TempDir()
+	stubPath = filepath.Join(dir, "aws")
+	logPath = filepath.Join(dir, "calls.log")
+
+	script := `#!/bin/sh
+echo "$@" >> ` + logPath + `
+svc=$1
+op=$2
+case "$svc $op" in
+  "organizations describe-organization")
+    echo '{"Organization":{"MasterAccountId":"999988887777"}}'
+    ;;
+  "organizations list-roots")
+    echo '{"Roots":[{"Id":"r-root"}]}'
+    ;;
+  "organizations list-accounts-for-parent")
+    echo '{"Accounts":[]}'
+    ;;
+  "organizations list-organizational-units-for-parent")
+    # Every parent, including ou-loop itself, names ou-loop as its child.
+    echo '{"OrganizationalUnits":[{"Id":"ou-loop","Name":"loop"}]}'
+    ;;
+  *)
+    echo "unexpected call: $*" >&2
+    exit 1
+    ;;
+esac
+`
+	if err := os.WriteFile(stubPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	return stubPath, logPath
+}
+
+func TestEnumerateOrgFailsClosedOnCyclicOU(t *testing.T) {
+	stub, _ := writeCyclicOrgStub(t)
+	t.Setenv(AWSBinEnv, stub)
+
+	// A short deadline bounds this test's own runtime and, since awsExec
+	// builds every child process with exec.CommandContext, also kills any
+	// in-flight aws subprocess the moment it fires. So if the recursion
+	// guard ever regresses, this fails fast (wrong error, "context deadline
+	// exceeded" rather than naming ou-loop) instead of wedging CI or leaking
+	// a subprocess that spawns forever.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := enumerateOrg(ctx, OrgOptions{})
+	if err == nil {
+		t.Fatal("expected an error for a cyclic OU tree, got nil")
+	}
+	if !strings.Contains(err.Error(), "ou-loop") {
+		t.Errorf("error should name the repeated parent id, got: %v", err)
 	}
 }
