@@ -134,7 +134,13 @@ within each segment. So:
 | --- | --- | --- |
 | `eng/prod` | `eng/prod`, `eng/prod/db` | `eng/dev`, `platform/prod` |
 | `eng/*` | `eng/prod`, `eng/prod/db`, `eng/dev` | `platform/prod` |
-| `*` | every account in the org | nothing |
+| `*` | every account in at least one OU | accounts sitting directly under the root |
+
+An account directly under the organization root has an empty OU path and is
+therefore matched by no pattern, including `*`, since every pattern requires
+at least one segment. That is acceptable: root-level accounts are typically
+just the management account, and selecting it by OU is not a real workflow.
+Select it by profile instead.
 
 This makes `--ou eng/prod` recursive: it selects the prod OU and everything
 nested beneath it. That is what "in the prod OU" means organizationally, since
