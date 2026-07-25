@@ -337,11 +337,12 @@ case "$svc $op" in
     ;;
   "organizations list-organizational-units-for-parent")
     case "$*" in
-      *r-root*)   echo '{"OrganizationalUnits":[{"Id":"ou-eng","Name":"eng"}]}' ;;
+      *r-root*)         echo '{"OrganizationalUnits":[{"Id":"ou-eng","Name":"eng"}]}' ;;
       *ou-eng-prod-db*) echo '{"OrganizationalUnits":[]}' ;;
-      *ou-eng-prod*) echo '{"OrganizationalUnits":[{"Id":"ou-eng-prod-db","Name":"db"}]}' ;;
-      *ou-eng,*|*ou-eng\ *) echo '{"OrganizationalUnits":[{"Id":"ou-eng-prod","Name":"prod"},{"Id":"ou-eng-dev","Name":"dev"}]}' ;;
-      *) echo '{"OrganizationalUnits":[]}' ;;
+      *ou-eng-prod*)    echo '{"OrganizationalUnits":[{"Id":"ou-eng-prod-db","Name":"db"}]}' ;;
+      *ou-eng-dev*)     echo '{"OrganizationalUnits":[]}' ;;
+      *ou-eng*)         echo '{"OrganizationalUnits":[{"Id":"ou-eng-prod","Name":"prod"},{"Id":"ou-eng-dev","Name":"dev"}]}' ;;
+      *)                echo '{"OrganizationalUnits":[]}' ;;
     esac
     ;;
   "organizations list-tags-for-resource")
@@ -827,7 +828,7 @@ func (c orgClient) fetchTags(ctx context.Context, org *Org) error {
 Run: `go test ./internal/core/ -run TestEnumerateOrg -v`
 Expected: PASS, all six tests.
 
-If `TestEnumerateOrgBuildsOUPaths` fails on the `eng` OU lookup, the stub's shell `case` pattern for `ou-eng` is matching `ou-eng-prod` too. Shell `case` takes the first matching branch, so the more specific `*ou-eng-prod-db*` and `*ou-eng-prod*` patterns must stay above the `ou-eng` branch, which is how the script above is ordered.
+If `TestEnumerateOrgBuildsOUPaths` hangs or recurses without end, the stub's shell `case` ordering has been disturbed. Shell `case` takes the first matching branch, so every specific parent id (`ou-eng-prod-db`, `ou-eng-prod`, `ou-eng-dev`) must stay above the generic `*ou-eng*` branch. Otherwise `ou-eng-dev` falls into the `ou-eng` branch, which lists `ou-eng-dev` as its own child and the walk never terminates.
 
 - [ ] **Step 6: Verify the whole build and suite**
 
