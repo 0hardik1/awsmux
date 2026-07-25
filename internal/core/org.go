@@ -41,6 +41,11 @@ type Org struct {
 	// enumerated for an OU-only query is not reused to answer a tag filter.
 	TagsFetched bool      `json:"tags_fetched"`
 	FetchedAt   time.Time `json:"fetched_at"`
+	// Source records the profile and assumed role this tree was enumerated with,
+	// so a cache produced by one set of credentials must never answer a query
+	// made with another. The account tree would be from a different organization
+	// entirely if credentials differ.
+	Source string `json:"source"`
 }
 
 // MatchOUPath reports whether an OU pattern matches an account's OU path. The
@@ -136,6 +141,13 @@ type OrgOptions struct {
 	Refresh bool
 	// WantTags fetches per-account tags, one extra API call per account.
 	WantTags bool
+}
+
+// sourceKey returns a stable key identifying the credentials this enumeration
+// will use. Caches are scoped by source, so the same org is never returned for
+// different credentials.
+func (o OrgOptions) sourceKey() string {
+	return o.Profile + "|" + o.AssumeRole
 }
 
 // orgClient issues aws organizations calls under one credential context.
@@ -266,6 +278,7 @@ func enumerateOrg(ctx context.Context, opts OrgOptions) (*Org, error) {
 		MasterAccountID: desc.Organization.MasterAccountID,
 		Accounts:        make(map[string]OrgAccount),
 		FetchedAt:       time.Now().UTC(),
+		Source:          opts.sourceKey(),
 	}
 	visited := make(map[string]bool)
 	for _, r := range roots.Roots {
@@ -458,7 +471,8 @@ func LoadOrg(ctx context.Context, opts OrgOptions) (*Org, error) {
 	if !opts.Refresh {
 		if o := loadOrgCache(); o != nil &&
 			time.Since(o.FetchedAt) < OrgCacheTTL &&
-			(!opts.WantTags || o.TagsFetched) {
+			(!opts.WantTags || o.TagsFetched) &&
+			o.Source == opts.sourceKey() {
 			return o, nil
 		}
 	}

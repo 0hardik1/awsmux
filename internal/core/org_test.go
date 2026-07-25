@@ -539,3 +539,33 @@ func TestLoadOrgDoesNotCacheFailures(t *testing.T) {
 		t.Error("a failed enumeration must not be cached")
 	}
 }
+
+func TestLoadOrgScopedByCredentials(t *testing.T) {
+	stub, logPath := writeOrgStub(t)
+	t.Setenv(AWSBinEnv, stub)
+	t.Setenv("AWSMUX_HOME", t.TempDir())
+
+	// Populate the cache with one profile.
+	org1, err := LoadOrg(context.Background(), OrgOptions{Profile: "mgmt"})
+	if err != nil {
+		t.Fatalf("first LoadOrg: %v", err)
+	}
+	if org1.Source != "mgmt|" {
+		t.Errorf("first org.Source = %q, want mgmt|", org1.Source)
+	}
+	first := len(readCalls(t, logPath))
+
+	// Call LoadOrg with a different profile. Must re-enumerate because the
+	// cache was produced by a different credential source, not reuse the mgmt
+	// org for the dev profile.
+	org2, err := LoadOrg(context.Background(), OrgOptions{Profile: "dev"})
+	if err != nil {
+		t.Fatalf("second LoadOrg: %v", err)
+	}
+	if org2.Source != "dev|" {
+		t.Errorf("second org.Source = %q, want dev|", org2.Source)
+	}
+	if got := len(readCalls(t, logPath)); got <= first {
+		t.Fatal("different profile reused cache from different profile")
+	}
+}
