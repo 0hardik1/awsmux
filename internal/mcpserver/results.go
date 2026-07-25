@@ -34,10 +34,16 @@ const (
 	restElisionMin = 10
 )
 
+// unreachablePreviewIDs is how many unreachable account ids the summary names
+// before eliding. The consumer is a model paying per token, so this stays a
+// count plus a taste, not a roster.
+const unreachablePreviewIDs = 5
+
 // compactTargets renders targets one line each: "id account principal", with
-// " DUPLICATE" and " ERROR: <msg>" suffixes when set. The format field tells
-// the agent how to read the lines.
-func compactTargets(targets []core.Target) map[string]any {
+// " ou=<path>", " DUPLICATE", and " ERROR: <msg>" suffixes when set. The
+// format field tells the agent how to read the lines. orgSel is nil unless
+// an org selector (ou or account_tags) actually ran.
+func compactTargets(targets []core.Target, orgSel *core.OrgSelection) map[string]any {
 	rows := make([]string, len(targets))
 	for i, t := range targets {
 		var b strings.Builder
@@ -48,6 +54,9 @@ func compactTargets(targets []core.Target) map[string]any {
 		if t.Principal != "" {
 			b.WriteString(" " + t.Principal)
 		}
+		if t.OUPath != "" {
+			b.WriteString(" ou=" + t.OUPath)
+		}
 		if t.Duplicate {
 			b.WriteString(" DUPLICATE")
 		}
@@ -56,11 +65,30 @@ func compactTargets(targets []core.Target) map[string]any {
 		}
 		rows[i] = b.String()
 	}
-	return map[string]any{
+
+	out := map[string]any{
 		"count":   len(targets),
-		"format":  "each entry: \"<profile>@<region> <account_id> <principal>\", plus DUPLICATE or ERROR: <msg> when applicable",
+		"format":  "each entry: \"<profile>@<region> <account_id> <principal>\", plus ou=<path>, DUPLICATE, or ERROR: <msg> when applicable",
 		"targets": rows,
 	}
+
+	// Only report coverage when an org selector actually ran; an absent key
+	// costs nothing, and a zero-valued one costs tokens for no information.
+	if orgSel != nil {
+		ids := make([]string, 0, unreachablePreviewIDs)
+		for i, a := range orgSel.Unreachable {
+			if i == unreachablePreviewIDs {
+				break
+			}
+			ids = append(ids, a.ID+" ("+a.Name+")")
+		}
+		out["unreachable"] = map[string]any{
+			"count":   len(orgSel.Unreachable),
+			"sample":  ids,
+			"meaning": "org accounts matching the selector that no local profile reaches; they were not targeted",
+		}
+	}
+	return out
 }
 
 // planResponse carries everything the agent needs to decide the next step

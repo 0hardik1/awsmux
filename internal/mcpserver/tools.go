@@ -35,13 +35,20 @@ var tools = []toolDef{
 			"is preflighted with sts get-caller-identity, filling account_id and " +
 			"principal and surfacing credential problems; set preflight to false to " +
 			"skip that. Set dedupe to drop targets that resolve to the same account, " +
-			"principal, and region as an earlier one.",
+			"principal, and region as an earlier one. Set ou or account_tags to " +
+			"select by AWS Organizations structure instead of profile name; the " +
+			"response then also reports matched org accounts that have no local profile.",
 		InputSchema: schemaObject(map[string]any{
-			"profiles":  schemaStringArray("Shell-style globs selecting profiles (e.g. [\"prod-*\"]). Empty means all profiles."),
-			"exclude":   schemaStringArray("Shell-style globs removing profiles after inclusion."),
-			"regions":   schemaStringArray("Regions to expand each profile into (one target per profile per region). Empty means each profile's default region."),
-			"preflight": schemaBoolWithDefault("Verify each target's identity via STS before returning it. Defaults to true.", true),
-			"dedupe":    schemaBool("Drop targets duplicating an earlier target's account, principal, and region. Implies preflight."),
+			"profiles":     schemaStringArray("Shell-style globs selecting profiles (e.g. [\"prod-*\"]). Empty means all profiles."),
+			"exclude":      schemaStringArray("Shell-style globs removing profiles after inclusion."),
+			"regions":      schemaStringArray("Regions to expand each profile into (one target per profile per region). Empty means each profile's default region."),
+			"preflight":    schemaBoolWithDefault("Verify each target's identity via STS before returning it. Defaults to true.", true),
+			"dedupe":       schemaBool("Drop targets duplicating an earlier target's account, principal, and region. Implies preflight."),
+			"ou":           schemaStringArray("AWS Organizations OU path globs, e.g. [\"eng/prod\"]. Matches nested OUs too, so \"eng/prod\" also selects \"eng/prod/db\". Filters on the STS-verified account id, and forces preflight on."),
+			"account_tags": schemaStringMap("Org account tag filter, e.g. {\"env\":\"prod\"}. Every pair must match. Forces preflight on."),
+			"org_role":     schemaString("Role ARN assumed to enumerate AWS Organizations. Enumeration only; it never affects how targets execute."),
+			"org_profile":  schemaString("Profile used for the organizations calls. Empty means normal AWS resolution."),
+			"org_refresh":  schemaBool("Bypass the cached organization tree (cached for one hour)."),
 		}),
 		handler: (*server).listTargetsTool,
 	},
@@ -62,14 +69,19 @@ var tools = []toolDef{
 			"keeps the execution response small enough to return whole, and on large " +
 			"fleets is the difference between one round trip and many.",
 		InputSchema: schemaObject(map[string]any{
-			"service":    schemaString("AWS CLI service, e.g. \"ec2\" or \"s3api\"."),
-			"operation":  schemaString("AWS CLI operation, e.g. \"describe-instances\"."),
-			"args":       schemaStringArray("Extra AWS CLI arguments appended after the operation. For reads, include a JMESPath projection, e.g. [\"--query\", \"Vpcs[].VpcId\"]; unprojected outputs on large fleets get truncated and cost extra round trips."),
-			"profiles":   schemaStringArray("Shell-style globs selecting profiles. Empty means all profiles."),
-			"exclude":    schemaStringArray("Shell-style globs removing profiles after inclusion."),
-			"regions":    schemaStringArray("Regions to expand each profile into. Empty means each profile's default region."),
-			"dedupe":     schemaBool("Drop targets duplicating an earlier target's account, principal, and region."),
-			"target_ids": schemaStringArray("Restrict the plan to these resolved target ids (\"profile@region\" or \"profile\"), typically from list_aws_targets. Unknown ids are an error."),
+			"service":      schemaString("AWS CLI service, e.g. \"ec2\" or \"s3api\"."),
+			"operation":    schemaString("AWS CLI operation, e.g. \"describe-instances\"."),
+			"args":         schemaStringArray("Extra AWS CLI arguments appended after the operation. For reads, include a JMESPath projection, e.g. [\"--query\", \"Vpcs[].VpcId\"]; unprojected outputs on large fleets get truncated and cost extra round trips."),
+			"profiles":     schemaStringArray("Shell-style globs selecting profiles. Empty means all profiles."),
+			"exclude":      schemaStringArray("Shell-style globs removing profiles after inclusion."),
+			"regions":      schemaStringArray("Regions to expand each profile into. Empty means each profile's default region."),
+			"dedupe":       schemaBool("Drop targets duplicating an earlier target's account, principal, and region."),
+			"target_ids":   schemaStringArray("Restrict the plan to these resolved target ids (\"profile@region\" or \"profile\"), typically from list_aws_targets. Unknown ids are an error."),
+			"ou":           schemaStringArray("AWS Organizations OU path globs, e.g. [\"eng/prod\"]. Matches nested OUs too, so \"eng/prod\" also selects \"eng/prod/db\". Filters on the STS-verified account id, and forces preflight on."),
+			"account_tags": schemaStringMap("Org account tag filter, e.g. {\"env\":\"prod\"}. Every pair must match. Forces preflight on."),
+			"org_role":     schemaString("Role ARN assumed to enumerate AWS Organizations. Enumeration only; it never affects how targets execute."),
+			"org_profile":  schemaString("Profile used for the organizations calls. Empty means normal AWS resolution."),
+			"org_refresh":  schemaBool("Bypass the cached organization tree (cached for one hour)."),
 		}, "service", "operation"),
 		handler: (*server).planOperationTool,
 	},
@@ -175,6 +187,14 @@ func schemaInt(desc string) map[string]any {
 	return map[string]any{"type": "integer", "description": desc}
 }
 
+func schemaStringMap(desc string) map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": map[string]any{"type": "string"},
+		"description":          desc,
+	}
+}
+
 // unmarshalArgs decodes tools/call arguments; absent arguments mean {}.
 // Unknown fields are an error: on a tool whose empty selector means "all
 // profiles", a misspelled field name must not silently widen scope.
@@ -194,38 +214,53 @@ func unmarshalArgs(raw json.RawMessage, v any) error {
 
 func (s *server) listTargetsTool(ctx context.Context, raw json.RawMessage) (any, error) {
 	var a struct {
-		Profiles  []string `json:"profiles"`
-		Exclude   []string `json:"exclude"`
-		Regions   []string `json:"regions"`
-		Preflight *bool    `json:"preflight"`
-		Dedupe    bool     `json:"dedupe"`
+		Profiles    []string          `json:"profiles"`
+		Exclude     []string          `json:"exclude"`
+		Regions     []string          `json:"regions"`
+		Preflight   *bool             `json:"preflight"`
+		Dedupe      bool              `json:"dedupe"`
+		OU          []string          `json:"ou"`
+		AccountTags map[string]string `json:"account_tags"`
+		OrgRole     string            `json:"org_role"`
+		OrgProfile  string            `json:"org_profile"`
+		OrgRefresh  bool              `json:"org_refresh"`
 	}
 	if err := unmarshalArgs(raw, &a); err != nil {
 		return nil, err
 	}
-	targets, err := core.ResolveTargets(ctx, core.Selector{
-		Profiles:  a.Profiles,
-		Exclude:   a.Exclude,
-		Regions:   a.Regions,
-		Preflight: a.Preflight == nil || *a.Preflight,
-		Dedupe:    a.Dedupe,
+	targets, orgSel, err := core.ResolveTargetsWithOrg(ctx, core.Selector{
+		Profiles:    a.Profiles,
+		Exclude:     a.Exclude,
+		Regions:     a.Regions,
+		Preflight:   a.Preflight == nil || *a.Preflight,
+		Dedupe:      a.Dedupe,
+		OU:          a.OU,
+		AccountTags: a.AccountTags,
+		OrgRole:     a.OrgRole,
+		OrgProfile:  a.OrgProfile,
+		OrgRefresh:  a.OrgRefresh,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("resolve targets: %w", err)
 	}
-	return compactTargets(targets), nil
+	return compactTargets(targets, orgSel), nil
 }
 
 func (s *server) planOperationTool(ctx context.Context, raw json.RawMessage) (any, error) {
 	var a struct {
-		Service   string   `json:"service"`
-		Operation string   `json:"operation"`
-		Args      []string `json:"args"`
-		Profiles  []string `json:"profiles"`
-		Exclude   []string `json:"exclude"`
-		Regions   []string `json:"regions"`
-		Dedupe    bool     `json:"dedupe"`
-		TargetIDs []string `json:"target_ids"`
+		Service     string            `json:"service"`
+		Operation   string            `json:"operation"`
+		Args        []string          `json:"args"`
+		Profiles    []string          `json:"profiles"`
+		Exclude     []string          `json:"exclude"`
+		Regions     []string          `json:"regions"`
+		Dedupe      bool              `json:"dedupe"`
+		TargetIDs   []string          `json:"target_ids"`
+		OU          []string          `json:"ou"`
+		AccountTags map[string]string `json:"account_tags"`
+		OrgRole     string            `json:"org_role"`
+		OrgProfile  string            `json:"org_profile"`
+		OrgRefresh  bool              `json:"org_refresh"`
 	}
 	if err := unmarshalArgs(raw, &a); err != nil {
 		return nil, err
@@ -236,11 +271,16 @@ func (s *server) planOperationTool(ctx context.Context, raw json.RawMessage) (an
 	// Preflight is forced on for planning: the plan hash binds to the
 	// identities it was approved against.
 	targets, err := core.ResolveTargets(ctx, core.Selector{
-		Profiles:  a.Profiles,
-		Exclude:   a.Exclude,
-		Regions:   a.Regions,
-		Preflight: true,
-		Dedupe:    a.Dedupe,
+		Profiles:    a.Profiles,
+		Exclude:     a.Exclude,
+		Regions:     a.Regions,
+		Preflight:   true,
+		Dedupe:      a.Dedupe,
+		OU:          a.OU,
+		AccountTags: a.AccountTags,
+		OrgRole:     a.OrgRole,
+		OrgProfile:  a.OrgProfile,
+		OrgRefresh:  a.OrgRefresh,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("resolve targets: %w", err)
