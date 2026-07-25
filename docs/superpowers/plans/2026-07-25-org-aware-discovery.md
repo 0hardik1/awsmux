@@ -177,8 +177,13 @@ type Org struct {
 	Accounts        map[string]OrgAccount `json:"accounts"`
 	// TagsFetched records whether per-account tags were retrieved, so a tree
 	// enumerated for an OU-only query is not reused to answer a tag filter.
-	TagsFetched bool      `json:"tags_fetched"`
-	FetchedAt   time.Time `json:"fetched_at"`
+	TagsFetched bool `json:"tags_fetched"`
+	// Source is the profile and assumed role that produced this tree. A cache
+	// entry written by one set of credentials must never answer a query made
+	// with another: the account tree would belong to a different organization
+	// entirely, so the filter would select against the wrong org.
+	Source    string    `json:"source"`
+	FetchedAt time.Time `json:"fetched_at"`
 }
 
 // MatchOUPath reports whether an OU pattern matches an account's OU path. The
@@ -1064,10 +1069,14 @@ func saveOrgCache(o *Org) {
 // API failure is retried on the next call rather than remembered.
 //
 // A tree cached by an OU-only query carries no tags, so it is not reused to
-// answer a tag filter; that check is what TagsFetched exists for.
+// answer a tag filter; that check is what TagsFetched exists for. A tree
+// cached under different credentials is likewise not reused, since it belongs
+// to a different organization; that check is what Source exists for. Both
+// mismatches behave like staleness: re-enumerate and overwrite.
 func LoadOrg(ctx context.Context, opts OrgOptions) (*Org, error) {
 	if !opts.Refresh {
 		if o := loadOrgCache(); o != nil &&
+			o.Source == opts.sourceKey() &&
 			time.Since(o.FetchedAt) < OrgCacheTTL &&
 			(!opts.WantTags || o.TagsFetched) {
 			return o, nil
