@@ -86,4 +86,9 @@ func TestMatchAccountNoTagsOnAccount(t *testing.T) {
 	if MatchAccount(acct, nil, map[string]string{"env": "prod"}) {
 		t.Error("account with no tags satisfied a tag filter; must fail closed")
 	}
+	// A filter requesting an empty value must not match a missing key: a nil
+	// map returns "" for every lookup, so a single-value lookup would match.
+	if MatchAccount(acct, nil, map[string]string{"env": ""}) {
+		t.Error("account with no tags matched an empty-valued tag filter; must fail closed")
+	}
 }

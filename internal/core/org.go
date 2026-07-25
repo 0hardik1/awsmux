@@ -93,12 +93,12 @@ func matchOUAny(patterns []string, ouPath string) bool {
 	return false
 }
 
-// matchTags reports whether the account carries every required tag pair. An
-// account with no tags satisfies only an empty requirement, so a tag filter
-// against an untagged account fails closed.
+// matchTags reports whether the account carries every required tag pair.
+// A tag filter requires each key to be present and its value to match, so
+// an account whose tags were never fetched never satisfies a non-empty filter.
 func matchTags(acct OrgAccount, want map[string]string) bool {
 	for k, v := range want {
-		if acct.Tags[k] != v {
+		if val, ok := acct.Tags[k]; !ok || val != v {
 			return false
 		}
 	}
