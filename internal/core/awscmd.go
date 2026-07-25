@@ -70,3 +70,15 @@ func awsExec(ctx context.Context, argv ...string) *exec.Cmd {
 	bin, lead := resolveAWSBin()
 	return exec.CommandContext(ctx, bin, append(lead, argv...)...)
 }
+
+// awsExecEnv is awsExec with extra "KEY=value" entries appended to the child's
+// environment. Only org enumeration uses it, because that is the only path
+// that may run under temporary credentials from an assumed role. Every other
+// call site uses awsExec and inherits the process environment unchanged.
+func awsExecEnv(ctx context.Context, extraEnv []string, argv ...string) *exec.Cmd {
+	cmd := awsExec(ctx, argv...)
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
+	return cmd
+}
