@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -418,5 +419,123 @@ func TestEnumerateOrgFailsClosedOnCyclicOU(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "ou-loop") {
 		t.Errorf("error should name the repeated parent id, got: %v", err)
+	}
+}
+
+func TestLoadOrgCachesBetweenCalls(t *testing.T) {
+	stub, logPath := writeOrgStub(t)
+	t.Setenv(AWSBinEnv, stub)
+	t.Setenv("AWSMUX_HOME", t.TempDir())
+
+	if _, err := LoadOrg(context.Background(), OrgOptions{}); err != nil {
+		t.Fatalf("first LoadOrg: %v", err)
+	}
+	first := len(readCalls(t, logPath))
+	if first == 0 {
+		t.Fatal("first call made no API calls")
+	}
+
+	if _, err := LoadOrg(context.Background(), OrgOptions{}); err != nil {
+		t.Fatalf("second LoadOrg: %v", err)
+	}
+	if got := len(readCalls(t, logPath)); got != first {
+		t.Errorf("second LoadOrg made %d extra calls, want 0 (cache hit)", got-first)
+	}
+}
+
+func TestLoadOrgRefreshBypassesCache(t *testing.T) {
+	stub, logPath := writeOrgStub(t)
+	t.Setenv(AWSBinEnv, stub)
+	t.Setenv("AWSMUX_HOME", t.TempDir())
+
+	if _, err := LoadOrg(context.Background(), OrgOptions{}); err != nil {
+		t.Fatalf("first LoadOrg: %v", err)
+	}
+	first := len(readCalls(t, logPath))
+
+	if _, err := LoadOrg(context.Background(), OrgOptions{Refresh: true}); err != nil {
+		t.Fatalf("refresh LoadOrg: %v", err)
+	}
+	if got := len(readCalls(t, logPath)); got <= first {
+		t.Error("Refresh did not re-enumerate")
+	}
+}
+
+func TestLoadOrgIgnoresExpiredCache(t *testing.T) {
+	stub, logPath := writeOrgStub(t)
+	t.Setenv(AWSBinEnv, stub)
+	home := t.TempDir()
+	t.Setenv("AWSMUX_HOME", home)
+
+	if _, err := LoadOrg(context.Background(), OrgOptions{}); err != nil {
+		t.Fatalf("first LoadOrg: %v", err)
+	}
+	first := len(readCalls(t, logPath))
+
+	// Backdate the cache past its TTL.
+	path := filepath.Join(home, "org-cache.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read cache: %v", err)
+	}
+	var cached Org
+	if err := json.Unmarshal(data, &cached); err != nil {
+		t.Fatalf("decode cache: %v", err)
+	}
+	cached.FetchedAt = time.Now().UTC().Add(-2 * OrgCacheTTL)
+	data, err = json.Marshal(&cached)
+	if err != nil {
+		t.Fatalf("encode cache: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write cache: %v", err)
+	}
+
+	if _, err := LoadOrg(context.Background(), OrgOptions{}); err != nil {
+		t.Fatalf("third LoadOrg: %v", err)
+	}
+	if got := len(readCalls(t, logPath)); got <= first {
+		t.Error("expired cache was reused")
+	}
+}
+
+func TestLoadOrgTaglessCacheCannotAnswerTagQuery(t *testing.T) {
+	stub, logPath := writeOrgStub(t)
+	t.Setenv(AWSBinEnv, stub)
+	t.Setenv("AWSMUX_HOME", t.TempDir())
+
+	// Populate the cache with an OU-only enumeration, which fetches no tags.
+	if _, err := LoadOrg(context.Background(), OrgOptions{}); err != nil {
+		t.Fatalf("first LoadOrg: %v", err)
+	}
+	first := len(readCalls(t, logPath))
+
+	org, err := LoadOrg(context.Background(), OrgOptions{WantTags: true})
+	if err != nil {
+		t.Fatalf("tag LoadOrg: %v", err)
+	}
+	if len(readCalls(t, logPath)) <= first {
+		t.Fatal("tagless cache was reused to answer a tag query")
+	}
+	if got := org.Accounts["111122223333"].Tags["env"]; got != "prod" {
+		t.Errorf("tag env = %q, want prod", got)
+	}
+}
+
+func TestLoadOrgDoesNotCacheFailures(t *testing.T) {
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "aws")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\necho boom >&2\nexit 254\n"), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	t.Setenv(AWSBinEnv, stub)
+	home := t.TempDir()
+	t.Setenv("AWSMUX_HOME", home)
+
+	if _, err := LoadOrg(context.Background(), OrgOptions{}); err == nil {
+		t.Fatal("expected an error")
+	}
+	if _, err := os.Stat(filepath.Join(home, "org-cache.json")); err == nil {
+		t.Error("a failed enumeration must not be cached")
 	}
 }

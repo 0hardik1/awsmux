@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -384,4 +386,86 @@ func (c orgClient) fetchTags(ctx context.Context, org *Org) error {
 	}
 	wg.Wait()
 	return firstErr
+}
+
+func orgCachePath() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "org-cache.json"), nil
+}
+
+// loadOrgCache reads the cached organization tree. Any problem (missing file,
+// corrupt JSON, empty account map) yields nil, so the caller re-enumerates.
+// Caching is best effort and must never fail a resolution.
+func loadOrgCache() *Org {
+	path, err := orgCachePath()
+	if err != nil {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var o Org
+	if json.Unmarshal(data, &o) != nil || len(o.Accounts) == 0 {
+		return nil
+	}
+	return &o
+}
+
+// saveOrgCache writes the tree atomically (temp file in the same directory,
+// then rename) so concurrent readers never see partial JSON. All errors are
+// swallowed; caching is best effort. The file holds account IDs, names, and
+// tags, never credentials.
+func saveOrgCache(o *Org) {
+	path, err := orgCachePath()
+	if err != nil {
+		return
+	}
+	data, err := json.MarshalIndent(o, "", "  ")
+	if err != nil {
+		return
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), "org-cache-*.json")
+	if err != nil {
+		return
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmp.Name())
+		return
+	}
+	_ = os.Chmod(tmp.Name(), 0o600)
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		os.Remove(tmp.Name())
+	}
+}
+
+// LoadOrg returns the organization tree, from cache when one is fresh enough
+// and complete enough for the query, otherwise by enumerating live and
+// caching the result. Only successful enumerations are cached, so a transient
+// API failure is retried on the next call rather than remembered.
+//
+// A tree cached by an OU-only query carries no tags, so it is not reused to
+// answer a tag filter; that check is what TagsFetched exists for.
+func LoadOrg(ctx context.Context, opts OrgOptions) (*Org, error) {
+	if !opts.Refresh {
+		if o := loadOrgCache(); o != nil &&
+			time.Since(o.FetchedAt) < OrgCacheTTL &&
+			(!opts.WantTags || o.TagsFetched) {
+			return o, nil
+		}
+	}
+	o, err := enumerateOrg(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	saveOrgCache(o)
+	return o, nil
 }
