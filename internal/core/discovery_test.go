@@ -628,6 +628,69 @@ esac
 	}
 }
 
+// TestResolveTargetsOrgZeroMatchWithOnlyUnverifiedTargets covers the
+// combination TestResolveTargetsOrgKeepsPreflightErroredTargets does not: no
+// target actually matched the org filter, and the only surviving target is
+// preflight-errored. Carrying that target through must not be mistaken for a
+// match: the caller still needs the zero-match error (a read-only path like
+// `awsmux targets` never calls CheckVerified, so without this the run would
+// silently "succeed" reporting only an unverified target).
+func TestResolveTargetsOrgZeroMatchWithOnlyUnverifiedTargets(t *testing.T) {
+	isolateSharedFiles(t)
+	cfg := writeSharedFile(t, "config", `[profile broken]
+region = us-east-1
+`)
+	t.Setenv("AWS_CONFIG_FILE", cfg)
+	t.Setenv("AWSMUX_HOME", t.TempDir())
+
+	stub := filepath.Join(t.TempDir(), "aws")
+	script := `#!/bin/sh
+svc=$1
+op=$2
+case "$svc $op" in
+  "sts get-caller-identity")
+    echo 'ExpiredTokenException: token expired' >&2; exit 254 ;;
+  "organizations describe-organization")
+    echo '{"Organization":{"MasterAccountId":"999988887777"}}' ;;
+  "organizations list-roots")
+    echo '{"Roots":[{"Id":"r-root"}]}' ;;
+  "organizations list-accounts-for-parent")
+    case "$*" in
+      *ou-prod*) echo '{"Accounts":[{"Id":"111122223333","Name":"prod-web","Status":"ACTIVE"}]}' ;;
+      *)         echo '{"Accounts":[]}' ;;
+    esac
+    ;;
+  "organizations list-organizational-units-for-parent")
+    case "$*" in
+      *r-root*) echo '{"OrganizationalUnits":[{"Id":"ou-eng","Name":"eng"}]}' ;;
+      *ou-eng*) echo '{"OrganizationalUnits":[{"Id":"ou-prod","Name":"prod"}]}' ;;
+      *)        echo '{"OrganizationalUnits":[]}' ;;
+    esac
+    ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+`
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	t.Setenv(AWSBinEnv, stub)
+
+	targets, _, err := ResolveTargetsWithOrg(context.Background(), Selector{OU: []string{"eng/prod"}})
+	if err == nil {
+		t.Fatalf("expected an error since nothing actually matched the filter, got success with targets %+v", targets)
+	}
+	if targets != nil {
+		t.Errorf("no targets may be returned when nothing matched, got %d: %+v", len(targets), targets)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "broken") {
+		t.Errorf("error should name the unverified target, got: %s", msg)
+	}
+	if !strings.Contains(msg, "not verified") {
+		t.Errorf("error should explain the target could not be checked because its identity was not verified, got: %s", msg)
+	}
+}
+
 func TestResolveTargetsNoOrgSelectorSkipsOrgEntirely(t *testing.T) {
 	isolateSharedFiles(t)
 	cfg := writeSharedFile(t, "config", `[profile alpha]

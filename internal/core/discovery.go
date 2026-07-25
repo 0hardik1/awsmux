@@ -243,14 +243,21 @@ func filterByOrg(ctx context.Context, sel Selector, targets []Target) ([]Target,
 	sort.Strings(matchedIDs)
 
 	reached := make(map[string]bool)
+	var unverified []Target
+	matched := 0
 	kept := targets[:0]
 	for _, t := range targets {
 		if t.PreflightErr != "" {
-			// An unverified target has no account id to join on. Keep it
-			// rather than drop it, so the blocking error CheckVerified
-			// raises survives; dropping it would quietly narrow the
-			// fan-out and report its account, if any, as unreachable
-			// when in fact no account was ever established.
+			// An unverified target has no account id to join on, so it was
+			// never actually evaluated against the filter: it must not
+			// count as a match. Keep it in the result so the blocking
+			// error CheckVerified raises survives (dropping it would
+			// quietly narrow the fan-out and report its account, if any,
+			// as unreachable when in fact no account was ever
+			// established), but remember it separately so a zero-match
+			// error can explain that an apparently-empty OU might really
+			// be an unchecked identity.
+			unverified = append(unverified, t)
 			kept = append(kept, t)
 			continue
 		}
@@ -262,6 +269,7 @@ func filterByOrg(ctx context.Context, sel Selector, targets []Target) ([]Target,
 		t.OrgAccountName = a.Name
 		reached[t.AccountID] = true
 		kept = append(kept, t)
+		matched++
 	}
 
 	var unreachable []OrgAccount
@@ -272,8 +280,8 @@ func filterByOrg(ctx context.Context, sel Selector, targets []Target) ([]Target,
 	}
 
 	orgSel := &OrgSelection{Org: org, Matched: matchedIDs, Unreachable: unreachable}
-	if len(kept) == 0 {
-		return nil, orgSel, noOrgMatchError(sel, len(matchedIDs))
+	if matched == 0 {
+		return nil, orgSel, noOrgMatchError(sel, len(matchedIDs), unverified)
 	}
 	return kept, orgSel, nil
 }
@@ -282,7 +290,14 @@ func filterByOrg(ctx context.Context, sel Selector, targets []Target) ([]Target,
 // identical: a filter that matched no account at all, and one that matched
 // accounts none of your profiles can reach. That difference matters most
 // immediately before a fan-out.
-func noOrgMatchError(sel Selector, matchedAccounts int) error {
+//
+// unverified lists targets that were carried through the filter unevaluated
+// because their identity preflight failed. Their presence can make an
+// otherwise-empty OU look populated to someone skimming the target list, so
+// when there are any, the message says so explicitly: a user whose one prod
+// profile has an expired SSO session should not read "no org account
+// matched" and conclude their OU is actually empty.
+func noOrgMatchError(sel Selector, matchedAccounts int, unverified []Target) error {
 	var what []string
 	if len(sel.OU) > 0 {
 		what = append(what, "--ou "+strings.Join(sel.OU, ","))
@@ -293,11 +308,28 @@ func noOrgMatchError(sel Selector, matchedAccounts int) error {
 	sort.Strings(what)
 	desc := strings.Join(what, " ")
 
+	var msg string
 	if matchedAccounts == 0 {
-		return fmt.Errorf("no targets matched %s\n  no org account matched the filter\n  hint: check the OU path with \"awsmux targets --ou '*'\"", desc)
+		msg = fmt.Sprintf("no targets matched %s\n  no org account matched the filter\n  hint: check the OU path with \"awsmux targets --ou '*'\"", desc)
+	} else {
+		msg = fmt.Sprintf("no targets matched %s\n  %d accounts matched, 0 with a local profile\n  hint: run \"awsmux targets %s --show-unreachable\" to list them",
+			desc, matchedAccounts, desc)
 	}
-	return fmt.Errorf("no targets matched %s\n  %d accounts matched, 0 with a local profile\n  hint: run \"awsmux targets %s --show-unreachable\" to list them",
-		desc, matchedAccounts, desc)
+
+	if len(unverified) > 0 {
+		names := make([]string, len(unverified))
+		for i, t := range unverified {
+			names[i] = t.ID
+		}
+		sort.Strings(names)
+		plural := "s"
+		if len(unverified) == 1 {
+			plural = ""
+		}
+		msg += fmt.Sprintf("\n  %d target%s could not be checked against the filter because identity was not verified: %s",
+			len(unverified), plural, strings.Join(names, ", "))
+	}
+	return errors.New(msg)
 }
 
 // NewTarget builds a Target with its stable ID ("profile@region", or just
