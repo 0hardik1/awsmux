@@ -1004,6 +1004,17 @@ Expected: FAIL to build, with `undefined: LoadOrg`.
 Append to `internal/core/org.go`, and extend its import block with `os` and `path/filepath`:
 
 ```go
+// sourceKey returns a collision-proof key identifying the credentials this
+// enumeration will use. Caches are scoped by source, so the same org is never
+// returned for different credentials. A plain separator is not enough because
+// profile names come from the shared-config INI parser, which permits
+// arbitrary characters including pipe; the length prefix removes the
+// ambiguity, since Profile is recovered by a fixed-width slice rather than by
+// searching for a delimiter.
+func (o OrgOptions) sourceKey() string {
+	return fmt.Sprintf("%d:%s|%s", len(o.Profile), o.Profile, o.AssumeRole)
+}
+
 func orgCachePath() (string, error) {
 	dir, err := Dir()
 	if err != nil {
