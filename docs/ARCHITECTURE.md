@@ -16,6 +16,7 @@ flowchart LR
     CMD --> CORE
     subgraph CORE [internal/core: the engine]
         DISC["discovery<br/>config + credentials files,<br/>globs, region expansion"]
+        ORG["org<br/>Organizations enumeration,<br/>1h TTL cache"]
         IDEN["identity<br/>STS preflight,<br/>dedup, 5m cache"]
         CLS["classify<br/>verb risk classes,<br/>arg escalation"]
         PLAN["plan + policy<br/>sha256 hash,<br/>approval tokens"]
@@ -97,6 +98,50 @@ binds to that hash. Consequences:
   and the raw token is printed exactly once and never stored.
 - There is no code path that executes a non-read-only plan without a
   valid token. Not a flag, not an env var, nothing for an agent to find.
+
+## Org-aware discovery
+
+`--ou` and `--account-tag` (`internal/core/org.go`) select targets by AWS
+Organizations structure instead of profile name. Resolution runs in a fixed
+order: load profiles, apply the profile globs, expand across regions, run
+STS preflight, apply the org filter, then dedupe. The org filter sits after
+preflight, not before, because it joins on the account id STS just verified;
+running it earlier would mean filtering on an account id nothing has
+confirmed yet, and a target whose preflight failed is carried through
+unfiltered so the existing "unverified target" error still fires instead of
+the target silently vanishing from the fan-out.
+
+`--org-role` is the single place in awsmux that holds credential material
+directly: `assumeRoleEnv` assumes the role to enumerate the org, and those
+temporary credentials reach only the `aws organizations` calls. They are
+never written to the org cache, never logged, and never reach fan-out
+execution, which stays `aws --profile <name>` as everywhere else. Note that
+`sts assume-role` is `ClassMutating` in awsmux's own classification tables:
+this is awsmux performing, internally, an operation it would gate behind a
+plan if a user submitted it directly. That is deliberate, bounded machinery,
+not a loophole for user-submitted plans.
+
+`OUPath` and `OrgAccountName` are covered by the plan hash as of
+`PolicyVersion` v3. Neither field changes `BuildCommand`, but both are
+rendered in the plan a human reads before approving, so both belong inside
+the integrity check the approval token binds to. Plans stored under the
+prior `PolicyVersion` (v2) fail `CheckApproval` with a hash mismatch:
+failing closed rather than approving against a plan whose displayed org
+metadata was never covered by the hash. `DefaultPlanTTL` is one hour, so
+the window in which a v2 plan could even still be pending is narrow.
+
+The enumerated tree is cached to `org-cache.json` under `$AWSMUX_HOME` for
+`OrgCacheTTL` (one hour), scoped by the credentials that produced it, so
+querying with a different `--org-profile` / `--org-role` never reads back
+another org's tree; `--org-refresh` bypasses the cache outright.
+
+Coverage: AWS Organizations is a Pro-gated API on `localstack/localstack:3.8`
+(the community line the test fleet runs). Against the running fleet,
+`aws organizations describe-organization` returns `InternalFailure` ("API
+for service 'organizations' not yet implemented or pro feature"), so
+`make e2e` cannot exercise the org path. Coverage for `--ou` and
+`--account-tag` is entirely `internal/core/org_test.go`, which stubs
+`AWSMUX_AWS_BIN` to fake `aws organizations` responses.
 
 ## The executor
 

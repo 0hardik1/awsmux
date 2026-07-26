@@ -115,12 +115,38 @@ in-flight target is one aws CLI subprocess), `--timeout 30s`,
 `--max-errors N`, `--stop-on-access-denied`, `--output-dir` (one result
 file per target; not on `replay`), `--interactive` (checkbox target
 picker; `run` only). Target selection (`--profiles`, `--exclude`,
-`--regions`, `--preflight`, `--dedupe`) applies to `run`, `plan`, and
-`targets`; `--dedupe` collapses targets that resolve to the same
-account, principal, and region, and it runs the STS preflight to find
-them even under `--preflight=false`. Every run lands in
+`--regions`, `--preflight`, `--dedupe`, `--ou`, `--account-tag`,
+`--org-role`, `--org-profile`, `--org-refresh`) applies to `run`,
+`plan`, and `targets`; `--dedupe` collapses targets that resolve to the
+same account, principal, and region, and it runs the STS preflight to
+find them even under `--preflight=false`. `--show-unreachable` is also
+accepted on all three but only `targets` acts on it. Every run lands in
 `awsmux history` and can be re-run with `awsmux replay`, which
 re-selects its targets from the stored execution.
+
+### Selecting by AWS Organizations
+
+`--ou` and `--account-tag` select targets by org structure instead of profile
+name. Both filter on the account id STS verified during preflight, never on a
+profile name, and both match nested OUs: `--ou eng/prod` also selects
+`eng/prod/db`.
+
+```sh
+awsmux targets --ou eng/prod
+awsmux targets --account-tag env=prod --show-unreachable
+awsmux run --ou eng/* -- ec2 describe-instances
+```
+
+awsmux enumerates the org through the AWS CLI and caches the tree for an hour
+(`--org-refresh` to bypass). When your everyday credentials cannot call the
+Organizations API, `--org-role <arn>` assumes a role for the enumeration only;
+it never changes how targets execute, which is always
+`aws --profile <name>`.
+
+Org accounts matching the filter that no local profile reaches are reported as
+unreachable rather than hidden, so `awsmux targets --ou eng/prod` tells you
+both what you can reach and what you cannot. If enumeration fails, the command
+errors out: an org selector never degrades into an unfiltered fan-out.
 
 ## Give it to your AI agent
 
@@ -266,8 +292,7 @@ the same convention locally).
 The demo GIF at the top is a real Ghostty session against the
 LocalStack fleet, recorded with [Kap](https://getkap.co).
 
-Dependencies: stdlib plus cobra. Roadmap: organization-aware discovery
-(`--ou` plus role assumption), policy packs, Homebrew tap and release
-binaries.
+Dependencies: stdlib plus cobra. Roadmap: policy packs, Homebrew tap and
+release binaries.
 
 Licensed under [Apache-2.0](LICENSE).
