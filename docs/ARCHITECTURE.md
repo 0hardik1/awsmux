@@ -139,9 +139,18 @@ Coverage: AWS Organizations is a Pro-gated API on `localstack/localstack:3.8`
 (the community line the test fleet runs). Against the running fleet,
 `aws organizations describe-organization` returns `InternalFailure` ("API
 for service 'organizations' not yet implemented or pro feature"), so
-`make e2e` cannot exercise the org path. Coverage for `--ou` and
-`--account-tag` is entirely `internal/core/org_test.go`, which stubs
-`AWSMUX_AWS_BIN` to fake `aws organizations` responses.
+`make e2e` cannot exercise the org path at all: the org selectors have
+never run against a real or emulated Organizations API. What exists instead
+is unit and integration coverage against a stubbed `AWSMUX_AWS_BIN`, spread
+across the layers it touches: `internal/core/org_test.go` for OU matching,
+enumeration, and the cache; `internal/core/discovery_test.go` for
+`ResolveTargetsWithOrg` itself, including the OU/tag filters, the
+forced-preflight rule, the fail-closed enumeration error, and the
+preflight-carry-through behavior described above; `internal/core/plan_test.go`
+for the hash now covering `OUPath` and `OrgAccountName`;
+`internal/mcpserver/tools_test.go` for the MCP schema fields and the
+compact/unreachable result shaping; and `internal/output/format_test.go`
+for the OU table column and unreachable rendering.
 
 ## The executor
 
