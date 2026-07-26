@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -111,5 +112,51 @@ func TestCompactTargetsOmitsUnreachableWithoutOrg(t *testing.T) {
 	out := compactTargets(targets, nil)
 	if _, present := out["unreachable"]; present {
 		t.Error("unreachable must be absent when no org selector ran; it costs tokens for nothing")
+	}
+}
+
+// TestOrgResolveErrorSurfacesUnreachableInsteadOfDeadHint drives the smallest
+// unit that reaches the all-unreachable branch: orgResolveError itself, fed
+// an error shaped exactly like core.ResolveTargetsWithOrg's zero-match error
+// when a selector matches org accounts but none are reachable by a local
+// profile (see core/discovery_test.go's TestResolveTargetsOrgZeroMatchExplainsCoverage
+// for the real end-to-end case this mirrors). An MCP agent has no terminal to
+// run the CLI's --show-unreachable hint, so that hint must be replaced with
+// the count and sample orgSel already carries.
+func TestOrgResolveErrorSurfacesUnreachableInsteadOfDeadHint(t *testing.T) {
+	coreErr := errors.New("no targets matched --ou eng/prod\n" +
+		"  2 accounts matched, 0 with a local profile\n" +
+		"  hint: run \"awsmux targets --ou eng/prod --show-unreachable\" to list them")
+	orgSel := &core.OrgSelection{
+		Matched: []string{"111122223333", "222233334444"},
+		Unreachable: []core.OrgAccount{
+			{ID: "111122223333", Name: "prod-web", OUPath: "eng/prod"},
+			{ID: "222233334444", Name: "prod-api", OUPath: "eng/prod"},
+		},
+	}
+
+	got := orgResolveError(coreErr, orgSel).Error()
+
+	if strings.Contains(got, "--show-unreachable") {
+		t.Errorf("dead CLI hint leaked into an MCP error an agent cannot act on: %q", got)
+	}
+	if !strings.Contains(got, "2") {
+		t.Errorf("unreachable count missing: %q", got)
+	}
+	if !strings.Contains(got, "111122223333") && !strings.Contains(got, "222233334444") {
+		t.Errorf("no unreachable account named: %q", got)
+	}
+	// The core error's own diagnostic content (which selector, how many
+	// accounts matched) must survive: wrapped, not overwritten.
+	if !strings.Contains(got, "eng/prod") || !strings.Contains(got, "2 accounts matched") {
+		t.Errorf("core diagnostic content dropped: %q", got)
+	}
+}
+
+func TestOrgResolveErrorPassesThroughWithoutOrgSelection(t *testing.T) {
+	coreErr := errors.New("no profiles matched selector [nope-*]")
+	got := orgResolveError(coreErr, nil).Error()
+	if !strings.Contains(got, "no profiles matched selector [nope-*]") {
+		t.Errorf("plain error content dropped: %q", got)
 	}
 }

@@ -75,20 +75,27 @@ func compactTargets(targets []core.Target, orgSel *core.OrgSelection) map[string
 	// Only report coverage when an org selector actually ran; an absent key
 	// costs nothing, and a zero-valued one costs tokens for no information.
 	if orgSel != nil {
-		ids := make([]string, 0, unreachablePreviewIDs)
-		for i, a := range orgSel.Unreachable {
-			if i == unreachablePreviewIDs {
-				break
-			}
-			ids = append(ids, a.ID+" ("+a.Name+")")
-		}
 		out["unreachable"] = map[string]any{
 			"count":   len(orgSel.Unreachable),
-			"sample":  ids,
+			"sample":  unreachableSample(orgSel),
 			"meaning": "org accounts matching the selector that no local profile reaches; they were not targeted",
 		}
 	}
 	return out
+}
+
+// unreachableSample renders up to unreachablePreviewIDs unreachable org
+// accounts as "<id> (<name>)". Shared by compactTargets and orgResolveError
+// so the sample-building loop and its cap exist in exactly one place.
+func unreachableSample(orgSel *core.OrgSelection) []string {
+	ids := make([]string, 0, unreachablePreviewIDs)
+	for i, a := range orgSel.Unreachable {
+		if i == unreachablePreviewIDs {
+			break
+		}
+		ids = append(ids, a.ID+" ("+a.Name+")")
+	}
+	return ids
 }
 
 // planResponse carries everything the agent needs to decide the next step

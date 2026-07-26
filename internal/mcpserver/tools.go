@@ -241,9 +241,44 @@ func (s *server) listTargetsTool(ctx context.Context, raw json.RawMessage) (any,
 		OrgRefresh:  a.OrgRefresh,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("resolve targets: %w", err)
+		return nil, orgResolveError(err, orgSel)
 	}
 	return compactTargets(targets, orgSel), nil
+}
+
+// orgResolveError adapts a zero-match error from core.ResolveTargetsWithOrg
+// for an MCP agent. The core error is written for a human at a terminal and,
+// when a selector matched org accounts that no local profile reaches, ends
+// with a hint like "run \"awsmux targets ... --show-unreachable\" to list
+// them": a CLI command an agent has no terminal to run. orgSel already
+// carries exactly the accounts that hint points at (it is populated
+// alongside the error in that case), so this drops the dead hint line and
+// reports the same count-plus-sample this tool already returns on success,
+// via compactTargets's unreachable block, keeping every other diagnostic in
+// the core error's message (which selector, how many accounts matched,
+// whether some targets were unverified) intact.
+func orgResolveError(err error, orgSel *core.OrgSelection) error {
+	if orgSel == nil {
+		return fmt.Errorf("resolve targets: %w", err)
+	}
+	lines := strings.Split(err.Error(), "\n")
+	kept := make([]string, 0, len(lines)+1)
+	for _, l := range lines {
+		if strings.Contains(l, "hint:") {
+			continue
+		}
+		kept = append(kept, l)
+	}
+	if len(orgSel.Unreachable) > 0 {
+		sample := unreachableSample(orgSel)
+		note := ""
+		if len(sample) < len(orgSel.Unreachable) {
+			note = fmt.Sprintf(" (showing first %d)", len(sample))
+		}
+		kept = append(kept, fmt.Sprintf("  %d org account(s) matched but no local profile reaches them%s: %s",
+			len(orgSel.Unreachable), note, strings.Join(sample, ", ")))
+	}
+	return fmt.Errorf("resolve targets: %s", strings.Join(kept, "\n"))
 }
 
 func (s *server) planOperationTool(ctx context.Context, raw json.RawMessage) (any, error) {
