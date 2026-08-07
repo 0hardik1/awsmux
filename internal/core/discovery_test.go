@@ -315,6 +315,415 @@ func TestNewTarget(t *testing.T) {
 	}
 }
 
+// orgFleetStub installs a stand-in aws CLI that answers both sts
+// get-caller-identity (per profile, so each profile resolves to a distinct
+// account) and the organizations tree, letting one test exercise the whole
+// resolve path.
+//
+//	eng/prod -> 111122223333, 222233334444
+//	eng/dev  -> 444455556666
+//
+// Local profiles: "alpha" -> 111122223333, "beta" -> 444455556666.
+// Account 222233334444 is in the org but has no local profile.
+func orgFleetStub(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script stub")
+	}
+	stub := filepath.Join(t.TempDir(), "aws")
+	script := `#!/bin/sh
+svc=$1
+op=$2
+case "$svc $op" in
+  "sts get-caller-identity")
+    case "$*" in
+      *"--profile alpha"*) echo '{"UserId":"AIDAA","Account":"111122223333","Arn":"arn:aws:iam::111122223333:user/alpha"}' ;;
+      *"--profile beta"*)  echo '{"UserId":"AIDAB","Account":"444455556666","Arn":"arn:aws:iam::444455556666:user/beta"}' ;;
+      *) echo '{"UserId":"AIDAZ","Account":"999988887777","Arn":"arn:aws:iam::999988887777:user/other"}' ;;
+    esac
+    ;;
+  "organizations describe-organization")
+    echo '{"Organization":{"MasterAccountId":"999988887777"}}' ;;
+  "organizations list-roots")
+    echo '{"Roots":[{"Id":"r-root"}]}' ;;
+  "organizations list-accounts-for-parent")
+    case "$*" in
+      *ou-prod*) echo '{"Accounts":[{"Id":"111122223333","Name":"prod-web","Status":"ACTIVE"},{"Id":"222233334444","Name":"prod-api","Status":"ACTIVE"}]}' ;;
+      *ou-dev*)  echo '{"Accounts":[{"Id":"444455556666","Name":"dev-sandbox","Status":"ACTIVE"}]}' ;;
+      *)         echo '{"Accounts":[]}' ;;
+    esac
+    ;;
+  "organizations list-organizational-units-for-parent")
+    case "$*" in
+      *r-root*) echo '{"OrganizationalUnits":[{"Id":"ou-eng","Name":"eng"}]}' ;;
+      *ou-eng*) echo '{"OrganizationalUnits":[{"Id":"ou-prod","Name":"prod"},{"Id":"ou-dev","Name":"dev"}]}' ;;
+      *)        echo '{"OrganizationalUnits":[]}' ;;
+    esac
+    ;;
+  "organizations list-tags-for-resource")
+    case "$*" in
+      *111122223333*) echo '{"Tags":[{"Key":"env","Value":"prod"}]}' ;;
+      *)              echo '{"Tags":[]}' ;;
+    esac
+    ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+`
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	return stub
+}
+
+// setupOrgFleet points discovery at two local profiles and the stub CLI.
+func setupOrgFleet(t *testing.T) {
+	t.Helper()
+	isolateSharedFiles(t)
+	cfg := writeSharedFile(t, "config", `[profile alpha]
+region = us-east-1
+
+[profile beta]
+region = us-east-1
+`)
+	t.Setenv("AWS_CONFIG_FILE", cfg)
+	t.Setenv("AWSMUX_HOME", t.TempDir())
+	t.Setenv(AWSBinEnv, orgFleetStub(t))
+}
+
+func TestResolveTargetsFiltersByOU(t *testing.T) {
+	setupOrgFleet(t)
+
+	targets, orgSel, err := ResolveTargetsWithOrg(context.Background(), Selector{
+		OU: []string{"eng/prod"},
+	})
+	if err != nil {
+		t.Fatalf("ResolveTargetsWithOrg: %v", err)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("got %d targets, want 1: %+v", len(targets), targets)
+	}
+	if targets[0].Profile != "alpha" {
+		t.Errorf("profile = %q, want alpha", targets[0].Profile)
+	}
+	if targets[0].OUPath != "eng/prod" {
+		t.Errorf("OUPath = %q, want eng/prod", targets[0].OUPath)
+	}
+	if targets[0].OrgAccountName != "prod-web" {
+		t.Errorf("OrgAccountName = %q, want prod-web", targets[0].OrgAccountName)
+	}
+	if orgSel == nil {
+		t.Fatal("OrgSelection must be non-nil when an org selector was used")
+	}
+	if len(orgSel.Unreachable) != 1 || orgSel.Unreachable[0].ID != "222233334444" {
+		t.Errorf("Unreachable = %+v, want just 222233334444", orgSel.Unreachable)
+	}
+}
+
+func TestResolveTargetsOUJoinsOnVerifiedAccountNotProfileName(t *testing.T) {
+	// "beta" resolves to the dev account. A profile name suggesting prod must
+	// never override what STS verified.
+	isolateSharedFiles(t)
+	cfg := writeSharedFile(t, "config", `[profile beta]
+region = us-east-1
+`)
+	t.Setenv("AWS_CONFIG_FILE", cfg)
+	t.Setenv("AWSMUX_HOME", t.TempDir())
+	t.Setenv(AWSBinEnv, orgFleetStub(t))
+
+	targets, _, err := ResolveTargetsWithOrg(context.Background(), Selector{
+		OU: []string{"eng/dev"},
+	})
+	if err != nil {
+		t.Fatalf("ResolveTargetsWithOrg: %v", err)
+	}
+	if len(targets) != 1 || targets[0].AccountID != "444455556666" {
+		t.Fatalf("got %+v, want the dev account only", targets)
+	}
+}
+
+func TestResolveTargetsOUIsRecursive(t *testing.T) {
+	setupOrgFleet(t)
+
+	targets, _, err := ResolveTargetsWithOrg(context.Background(), Selector{
+		OU: []string{"eng"},
+	})
+	if err != nil {
+		t.Fatalf("ResolveTargetsWithOrg: %v", err)
+	}
+	if len(targets) != 2 {
+		t.Fatalf("got %d targets, want both eng/prod and eng/dev: %+v", len(targets), targets)
+	}
+}
+
+func TestResolveTargetsFiltersByAccountTag(t *testing.T) {
+	setupOrgFleet(t)
+
+	targets, _, err := ResolveTargetsWithOrg(context.Background(), Selector{
+		AccountTags: map[string]string{"env": "prod"},
+	})
+	if err != nil {
+		t.Fatalf("ResolveTargetsWithOrg: %v", err)
+	}
+	if len(targets) != 1 || targets[0].AccountID != "111122223333" {
+		t.Fatalf("got %+v, want only the env=prod account", targets)
+	}
+}
+
+func TestResolveTargetsOrgSelectorForcesPreflight(t *testing.T) {
+	setupOrgFleet(t)
+
+	// Preflight false in the selector must still resolve identities, because
+	// the org filter has nothing to join on otherwise.
+	targets, _, err := ResolveTargetsWithOrg(context.Background(), Selector{
+		OU:        []string{"eng/prod"},
+		Preflight: false,
+	})
+	if err != nil {
+		t.Fatalf("ResolveTargetsWithOrg: %v", err)
+	}
+	if len(targets) != 1 || targets[0].AccountID == "" {
+		t.Fatalf("org selector did not force preflight: %+v", targets)
+	}
+}
+
+func TestResolveTargetsOrgFailureIsFatal(t *testing.T) {
+	isolateSharedFiles(t)
+	cfg := writeSharedFile(t, "config", `[profile alpha]
+region = us-east-1
+`)
+	t.Setenv("AWS_CONFIG_FILE", cfg)
+	t.Setenv("AWSMUX_HOME", t.TempDir())
+
+	// A stub that answers STS but fails every organizations call.
+	stub := filepath.Join(t.TempDir(), "aws")
+	script := `#!/bin/sh
+case "$1 $2" in
+  "sts get-caller-identity") echo '{"UserId":"AIDAA","Account":"111122223333","Arn":"arn:aws:iam::111122223333:user/alpha"}' ;;
+  *) echo 'AccessDeniedException: organizations:DescribeOrganization' >&2; exit 254 ;;
+esac
+`
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	t.Setenv(AWSBinEnv, stub)
+
+	targets, _, err := ResolveTargetsWithOrg(context.Background(), Selector{OU: []string{"eng/prod"}})
+	if err == nil {
+		t.Fatal("org enumeration failure must be fatal, never an unfiltered fan-out")
+	}
+	if targets != nil {
+		t.Errorf("no targets may be returned on org failure, got %d", len(targets))
+	}
+	if !strings.Contains(err.Error(), "AccessDeniedException") {
+		t.Errorf("error should surface the API message, got: %v", err)
+	}
+}
+
+func TestResolveTargetsOrgZeroMatchExplainsCoverage(t *testing.T) {
+	setupOrgFleet(t)
+
+	// eng/prod holds two accounts; drop the one profile that reaches it so
+	// the message has to distinguish "empty OU" from "no local profile".
+	_, orgSel, err := ResolveTargetsWithOrg(context.Background(), Selector{
+		Profiles: []string{"beta"},
+		OU:       []string{"eng/prod"},
+	})
+	if err == nil {
+		t.Fatal("expected an error when nothing matched")
+	}
+	msg := err.Error()
+	for _, want := range []string{"eng/prod", "2 accounts matched", "0 with a local profile", "show-unreachable"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error message missing %q:\n%s", want, msg)
+		}
+	}
+	// The error's own hint tells the caller to list the unreachable accounts;
+	// the selection carrying them must survive the error return, or nothing
+	// can honor that hint without re-enumerating the org from scratch.
+	if orgSel == nil {
+		t.Fatal("OrgSelection must be populated on a zero-match error so callers can honor the --show-unreachable hint")
+	}
+	if len(orgSel.Unreachable) != 2 {
+		t.Errorf("Unreachable = %+v, want both eng/prod accounts", orgSel.Unreachable)
+	}
+}
+
+// TestResolveTargetsOrgKeepsPreflightErroredTargets verifies that a target
+// whose identity preflight failed is carried through the org filter
+// untouched rather than dropped. Such a target has no verified AccountID to
+// join on; dropping it would turn a blocking preflight failure into a
+// silently narrower fan-out, and would misreport its account as
+// "unreachable" when in fact no account was ever established.
+func TestResolveTargetsOrgKeepsPreflightErroredTargets(t *testing.T) {
+	isolateSharedFiles(t)
+	cfg := writeSharedFile(t, "config", `[profile alpha]
+region = us-east-1
+
+[profile broken]
+region = us-east-1
+`)
+	t.Setenv("AWS_CONFIG_FILE", cfg)
+	t.Setenv("AWSMUX_HOME", t.TempDir())
+
+	stub := filepath.Join(t.TempDir(), "aws")
+	script := `#!/bin/sh
+svc=$1
+op=$2
+case "$svc $op" in
+  "sts get-caller-identity")
+    case "$*" in
+      *"--profile alpha"*)  echo '{"UserId":"AIDAA","Account":"111122223333","Arn":"arn:aws:iam::111122223333:user/alpha"}' ;;
+      *"--profile broken"*) echo 'ExpiredTokenException: token expired' >&2; exit 254 ;;
+      *) echo "unexpected sts profile: $*" >&2; exit 1 ;;
+    esac
+    ;;
+  "organizations describe-organization")
+    echo '{"Organization":{"MasterAccountId":"999988887777"}}' ;;
+  "organizations list-roots")
+    echo '{"Roots":[{"Id":"r-root"}]}' ;;
+  "organizations list-accounts-for-parent")
+    case "$*" in
+      *ou-prod*) echo '{"Accounts":[{"Id":"111122223333","Name":"prod-web","Status":"ACTIVE"}]}' ;;
+      *)         echo '{"Accounts":[]}' ;;
+    esac
+    ;;
+  "organizations list-organizational-units-for-parent")
+    case "$*" in
+      *r-root*) echo '{"OrganizationalUnits":[{"Id":"ou-eng","Name":"eng"}]}' ;;
+      *ou-eng*) echo '{"OrganizationalUnits":[{"Id":"ou-prod","Name":"prod"}]}' ;;
+      *)        echo '{"OrganizationalUnits":[]}' ;;
+    esac
+    ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+`
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	t.Setenv(AWSBinEnv, stub)
+
+	targets, _, err := ResolveTargetsWithOrg(context.Background(), Selector{OU: []string{"eng/prod"}})
+	if err != nil {
+		t.Fatalf("ResolveTargetsWithOrg: %v", err)
+	}
+	if len(targets) != 2 {
+		t.Fatalf("got %d targets, want 2 (the matched account plus the unverified one): %+v", len(targets), targets)
+	}
+
+	var broken *Target
+	for i := range targets {
+		if targets[i].Profile == "broken" {
+			broken = &targets[i]
+		}
+	}
+	if broken == nil {
+		t.Fatal("preflight-errored target was dropped by the org filter instead of carried through")
+	}
+	if broken.PreflightErr == "" {
+		t.Error("errored target lost its PreflightErr")
+	}
+
+	if err := CheckVerified(targets); err == nil {
+		t.Fatal("CheckVerified must still block on the unverified target; the org filter must not silently narrow the fan-out around it")
+	}
+}
+
+// TestResolveTargetsOrgZeroMatchWithOnlyUnverifiedTargets covers the
+// combination TestResolveTargetsOrgKeepsPreflightErroredTargets does not: no
+// target actually matched the org filter, and the only surviving target is
+// preflight-errored. Carrying that target through must not be mistaken for a
+// match: the caller still needs the zero-match error (a read-only path like
+// `awsmux targets` never calls CheckVerified, so without this the run would
+// silently "succeed" reporting only an unverified target).
+func TestResolveTargetsOrgZeroMatchWithOnlyUnverifiedTargets(t *testing.T) {
+	isolateSharedFiles(t)
+	cfg := writeSharedFile(t, "config", `[profile broken]
+region = us-east-1
+`)
+	t.Setenv("AWS_CONFIG_FILE", cfg)
+	t.Setenv("AWSMUX_HOME", t.TempDir())
+
+	stub := filepath.Join(t.TempDir(), "aws")
+	script := `#!/bin/sh
+svc=$1
+op=$2
+case "$svc $op" in
+  "sts get-caller-identity")
+    echo 'ExpiredTokenException: token expired' >&2; exit 254 ;;
+  "organizations describe-organization")
+    echo '{"Organization":{"MasterAccountId":"999988887777"}}' ;;
+  "organizations list-roots")
+    echo '{"Roots":[{"Id":"r-root"}]}' ;;
+  "organizations list-accounts-for-parent")
+    case "$*" in
+      *ou-prod*) echo '{"Accounts":[{"Id":"111122223333","Name":"prod-web","Status":"ACTIVE"}]}' ;;
+      *)         echo '{"Accounts":[]}' ;;
+    esac
+    ;;
+  "organizations list-organizational-units-for-parent")
+    case "$*" in
+      *r-root*) echo '{"OrganizationalUnits":[{"Id":"ou-eng","Name":"eng"}]}' ;;
+      *ou-eng*) echo '{"OrganizationalUnits":[{"Id":"ou-prod","Name":"prod"}]}' ;;
+      *)        echo '{"OrganizationalUnits":[]}' ;;
+    esac
+    ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+`
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	t.Setenv(AWSBinEnv, stub)
+
+	targets, _, err := ResolveTargetsWithOrg(context.Background(), Selector{OU: []string{"eng/prod"}})
+	if err == nil {
+		t.Fatalf("expected an error since nothing actually matched the filter, got success with targets %+v", targets)
+	}
+	if targets != nil {
+		t.Errorf("no targets may be returned when nothing matched, got %d: %+v", len(targets), targets)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "broken") {
+		t.Errorf("error should name the unverified target, got: %s", msg)
+	}
+	if !strings.Contains(msg, "not verified") {
+		t.Errorf("error should explain the target could not be checked because its identity was not verified, got: %s", msg)
+	}
+}
+
+func TestResolveTargetsNoOrgSelectorSkipsOrgEntirely(t *testing.T) {
+	isolateSharedFiles(t)
+	cfg := writeSharedFile(t, "config", `[profile alpha]
+region = us-east-1
+`)
+	t.Setenv("AWS_CONFIG_FILE", cfg)
+	t.Setenv("AWSMUX_HOME", t.TempDir())
+
+	// Fails on any organizations call: plain resolution must never make one.
+	stub := filepath.Join(t.TempDir(), "aws")
+	script := `#!/bin/sh
+case "$1" in
+  sts) echo '{"UserId":"AIDAA","Account":"111122223333","Arn":"arn:aws:iam::111122223333:user/alpha"}' ;;
+  *) echo "organizations called without an org selector" >&2; exit 1 ;;
+esac
+`
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	t.Setenv(AWSBinEnv, stub)
+
+	targets, orgSel, err := ResolveTargetsWithOrg(context.Background(), Selector{Preflight: true})
+	if err != nil {
+		t.Fatalf("ResolveTargetsWithOrg: %v", err)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("got %d targets, want 1", len(targets))
+	}
+	if orgSel != nil {
+		t.Error("OrgSelection must be nil when no org selector was used")
+	}
+}
+
 func TestMarkDuplicates(t *testing.T) {
 	mk := func(id, account, principal, region, preflightErr string) Target {
 		return Target{ID: id, Profile: id, AccountID: account, Principal: principal, Region: region, PreflightErr: preflightErr}

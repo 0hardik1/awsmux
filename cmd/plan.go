@@ -52,6 +52,9 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := planFlags.sel.validate(cmd); err != nil {
+		return err
+	}
 	sel := planFlags.sel.selector()
 	// The plan hash binds verified identities, so preflight is not optional.
 	sel.Preflight = true

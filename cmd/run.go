@@ -53,6 +53,9 @@ func runRun(cmd *cobra.Command, args []string) error {
 	if err := core.ValidateArgs(rest); err != nil {
 		return Exitf(core.ExitConfigError, "%s", err)
 	}
+	if err := runFlags.sel.validate(cmd); err != nil {
+		return err
+	}
 
 	sel := runFlags.sel.selector()
 	// Never execute against unverified identities, whatever --preflight says.

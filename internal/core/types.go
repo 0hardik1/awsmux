@@ -53,6 +53,11 @@ type Target struct {
 	Duplicate bool `json:"duplicate,omitempty"`
 	// PreflightErr holds the sts get-caller-identity failure, if any.
 	PreflightErr string `json:"preflight_error,omitempty"`
+	// OrgAccountName and OUPath are filled when an org selector ran. They
+	// are Organizations metadata, never a substitute for the verified
+	// AccountID.
+	OrgAccountName string `json:"org_account_name,omitempty"`
+	OUPath         string `json:"ou_path,omitempty"`
 }
 
 // Profile is one profile parsed from the AWS shared config and credentials
@@ -87,6 +92,21 @@ type Selector struct {
 	Preflight bool `json:"preflight,omitempty"`
 	// Dedupe drops targets marked Duplicate (implies Preflight).
 	Dedupe bool `json:"dedupe,omitempty"`
+	// OU selects accounts by AWS Organizations OU path glob. A pattern
+	// matches a prefix of the path segment by segment, so "eng/prod" also
+	// selects "eng/prod/db". Implies Preflight, because the filter joins on
+	// the STS-verified account ID.
+	OU []string `json:"ou,omitempty"`
+	// AccountTags selects accounts carrying every one of these org tag
+	// pairs. Implies Preflight, for the same reason as OU.
+	AccountTags map[string]string `json:"account_tags,omitempty"`
+	// OrgRole is a role ARN assumed solely to enumerate the organization.
+	// It never affects how targets execute.
+	OrgRole string `json:"org_role,omitempty"`
+	// OrgProfile is the base profile the organizations calls run under.
+	OrgProfile string `json:"org_profile,omitempty"`
+	// OrgRefresh bypasses the cached organization tree.
+	OrgRefresh bool `json:"org_refresh,omitempty"`
 }
 
 // PlanStatus is the lifecycle state of a plan.

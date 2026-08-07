@@ -132,7 +132,7 @@ func TestCompactTargetsFormat(t *testing.T) {
 	got := compactTargets([]core.Target{
 		{ID: "a@us-east-1", AccountID: "1", Principal: "arn:x", Duplicate: true},
 		{ID: "b@us-east-1", PreflightErr: "sts failed"},
-	})
+	}, nil)
 	rows := got["targets"].([]string)
 	if rows[0] != "a@us-east-1 1 arn:x DUPLICATE" {
 		t.Errorf("row 0: %q", rows[0])

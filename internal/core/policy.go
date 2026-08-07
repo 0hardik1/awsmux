@@ -15,7 +15,11 @@ import (
 // PolicyVersion is stamped into plans; bump when approval rules change.
 // v2 reclassified s3 mv as destructive, s3 presign as mutating, and made
 // s3 sync --delete escalate to destructive.
-const PolicyVersion = "v2"
+// v3 added the org metadata (OUPath, OrgAccountName) to the plan hash, so
+// plans stored under v2 fail CheckApproval with a hash mismatch. That is
+// intentional and fails closed; DefaultPlanTTL is one hour, so the window
+// during which any plan is affected is narrow.
+const PolicyVersion = "v3"
 
 // RequiresApproval reports whether a classification needs an approval
 // token: ReadOnly runs freely; Mutating, Destructive, and Unknown all

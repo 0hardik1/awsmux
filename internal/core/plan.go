@@ -57,9 +57,9 @@ func NewPlan(service, operation string, args []string, targets []Target, ttl tim
 
 // ComputeHash returns the hex sha256 over a canonical JSON encoding of the
 // fields that define the plan: service, operation, args, each target's
-// (ID, Profile, Region, AccountID, Principal), classification, policy
-// version, and expires_at (RFC 3339). Field order must be fixed so the hash
-// is reproducible; approval binds to this hash.
+// (ID, Profile, Region, AccountID, Principal, OUPath, OrgAccountName),
+// classification, policy version, and expires_at (RFC 3339). Field order
+// must be fixed so the hash is reproducible; approval binds to this hash.
 func (p *Plan) ComputeHash() string {
 	type targetKey struct {
 		ID        string `json:"id"`
@@ -67,15 +67,25 @@ func (p *Plan) ComputeHash() string {
 		Region    string `json:"region"`
 		AccountID string `json:"account_id"`
 		Principal string `json:"principal"`
+		// Org metadata is hashed because it is rendered in the plan a
+		// human reads when approving. It does not influence
+		// BuildCommand, so this is about honest presentation rather
+		// than blast radius: without it, editing a stored plan's
+		// OUPath would change what an approver sees without tripping
+		// the mismatch check in CheckApproval.
+		OUPath         string `json:"ou_path"`
+		OrgAccountName string `json:"org_account_name"`
 	}
 	keys := make([]targetKey, len(p.Targets))
 	for i, t := range p.Targets {
 		keys[i] = targetKey{
-			ID:        t.ID,
-			Profile:   t.Profile,
-			Region:    t.Region,
-			AccountID: t.AccountID,
-			Principal: t.Principal,
+			ID:             t.ID,
+			Profile:        t.Profile,
+			Region:         t.Region,
+			AccountID:      t.AccountID,
+			Principal:      t.Principal,
+			OUPath:         t.OUPath,
+			OrgAccountName: t.OrgAccountName,
 		}
 	}
 	// Normalize an empty args slice to nil so the hash survives the JSON

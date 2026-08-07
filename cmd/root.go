@@ -63,11 +63,17 @@ func Execute() int {
 
 // selectorFlags are shared by every command that picks targets.
 type selectorFlags struct {
-	profiles  []string
-	exclude   []string
-	regions   []string
-	preflight bool
-	dedupe    bool
+	profiles        []string
+	exclude         []string
+	regions         []string
+	preflight       bool
+	dedupe          bool
+	ou              []string
+	accountTags     map[string]string
+	orgRole         string
+	orgProfile      string
+	orgRefresh      bool
+	showUnreachable bool
 }
 
 func addSelectorFlags(cmd *cobra.Command, sf *selectorFlags) {
@@ -77,16 +83,42 @@ func addSelectorFlags(cmd *cobra.Command, sf *selectorFlags) {
 	f.StringSliceVar(&sf.regions, "regions", nil, "region(s), one target per profile x region (default: profile default region)")
 	f.BoolVar(&sf.preflight, "preflight", true, "verify each target identity via sts get-caller-identity")
 	f.BoolVar(&sf.dedupe, "dedupe", false, "drop targets that resolve to a duplicate account+principal+region")
+	f.StringSliceVar(&sf.ou, "ou", nil, "AWS Organizations OU path glob(s), e.g. 'eng/prod' (matches nested OUs too)")
+	f.StringToStringVar(&sf.accountTags, "account-tag", nil, "org account tag filter(s), e.g. env=prod (every pair must match)")
+	f.StringVar(&sf.orgRole, "org-role", "", "role ARN assumed to enumerate AWS Organizations (enumeration only, never execution)")
+	f.StringVar(&sf.orgProfile, "org-profile", "", "profile for the organizations calls (default: normal AWS resolution)")
+	f.BoolVar(&sf.orgRefresh, "org-refresh", false, "bypass the cached organization tree")
+	f.BoolVar(&sf.showUnreachable, "show-unreachable", false, "list every matched org account that has no local profile")
 }
 
 func (sf *selectorFlags) selector() core.Selector {
 	return core.Selector{
-		Profiles:  sf.profiles,
-		Exclude:   sf.exclude,
-		Regions:   sf.regions,
-		Preflight: sf.preflight,
-		Dedupe:    sf.dedupe,
+		Profiles:    sf.profiles,
+		Exclude:     sf.exclude,
+		Regions:     sf.regions,
+		Preflight:   sf.preflight,
+		Dedupe:      sf.dedupe,
+		OU:          sf.ou,
+		AccountTags: sf.accountTags,
+		OrgRole:     sf.orgRole,
+		OrgProfile:  sf.orgProfile,
+		OrgRefresh:  sf.orgRefresh,
 	}
+}
+
+// validate rejects flag combinations that cannot be honored. An org selector
+// filters on the account ID STS verified, so it cannot run with preflight
+// explicitly disabled; silently overriding the user would be worse than
+// saying so.
+func (sf *selectorFlags) validate(cmd *cobra.Command) error {
+	if !sf.selector().UsesOrg() {
+		return nil
+	}
+	if cmd.Flags().Changed("preflight") && !sf.preflight {
+		return Exitf(core.ExitConfigError,
+			"--ou and --account-tag filter on the account ID that STS verified, so they cannot run with --preflight=false")
+	}
+	return nil
 }
 
 // execFlags are shared by run / apply / replay.

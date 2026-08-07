@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -108,19 +109,51 @@ func mergeProfiles(cfg, creds []Profile) []Profile {
 	return merged
 }
 
-// ResolveTargets expands a Selector into concrete targets:
+// OrgSelection reports what AWS Organizations contributed to a resolution.
+// It is nil when the selector used no org filter.
+type OrgSelection struct {
+	// Org is the enumerated tree the filter ran against.
+	Org *Org
+	// Matched holds every account ID satisfying the OU and tag filters,
+	// sorted, whether or not a local profile reaches it.
+	Matched []string
+	// Unreachable holds the matched accounts that no local profile reaches.
+	Unreachable []OrgAccount
+}
+
+// UsesOrg reports whether the selector needs AWS Organizations data.
+func (s Selector) UsesOrg() bool {
+	return len(s.OU) > 0 || len(s.AccountTags) > 0
+}
+
+// ResolveTargets discovers, filters, and (when asked) verifies targets.
+// It is ResolveTargetsWithOrg without the org coverage report.
+func ResolveTargets(ctx context.Context, sel Selector) ([]Target, error) {
+	targets, _, err := ResolveTargetsWithOrg(ctx, sel)
+	return targets, err
+}
+
+// ResolveTargetsWithOrg is ResolveTargets plus the OrgSelection describing
+// what the org filter matched, including accounts that matched but have no
+// local profile. The second return is nil when sel.UsesOrg() is false.
+//
 //  1. LoadProfiles, filter with MatchGlob (Profiles include, Exclude remove).
 //  2. Expand profiles x sel.Regions; empty Regions means one target per
 //     profile with the profile's default region.
-//  3. If sel.Preflight or sel.Dedupe, run Preflight then MarkDuplicates.
-//  4. If sel.Dedupe, drop targets with Duplicate == true.
+//  3. If sel.Preflight, sel.Dedupe, or sel.UsesOrg(), run Preflight then
+//     MarkDuplicates: the org filter joins on the STS-verified account ID,
+//     so it forces preflight the same way Dedupe does.
+//  4. If sel.UsesOrg(), filter targets by OU path and account tags,
+//     matching against the verified AccountID.
+//  5. If sel.Dedupe, drop targets with Duplicate == true.
 //
 // Returns ExitConfigError-worthy errors (no profiles matched, config
-// unreadable) as plain errors; callers map them to exit codes.
-func ResolveTargets(ctx context.Context, sel Selector) ([]Target, error) {
+// unreadable, org enumeration failed) as plain errors; callers map them to
+// exit codes.
+func ResolveTargetsWithOrg(ctx context.Context, sel Selector) ([]Target, *OrgSelection, error) {
 	profiles, err := LoadProfiles()
 	if err != nil {
-		return nil, fmt.Errorf("load profiles: %w", err)
+		return nil, nil, fmt.Errorf("load profiles: %w", err)
 	}
 
 	var matched []Profile
@@ -131,9 +164,9 @@ func ResolveTargets(ctx context.Context, sel Selector) ([]Target, error) {
 	}
 	if len(matched) == 0 {
 		if len(profiles) == 0 {
-			return nil, noProfilesError()
+			return nil, nil, noProfilesError()
 		}
-		return nil, fmt.Errorf("no profiles matched selector %v", sel.Profiles)
+		return nil, nil, fmt.Errorf("no profiles matched selector %v", sel.Profiles)
 	}
 
 	var targets []Target
@@ -151,10 +184,25 @@ func ResolveTargets(ctx context.Context, sel Selector) ([]Target, error) {
 		}
 	}
 
-	if sel.Preflight || sel.Dedupe {
+	// An org filter joins on the STS-verified account ID, so it forces
+	// preflight exactly the way Dedupe does.
+	if sel.Preflight || sel.Dedupe || sel.UsesOrg() {
 		targets = Preflight(ctx, targets)
 		targets = MarkDuplicates(targets)
 	}
+
+	var orgSel *OrgSelection
+	if sel.UsesOrg() {
+		targets, orgSel, err = filterByOrg(ctx, sel, targets)
+		if err != nil {
+			// orgSel may be non-nil here (a zero-match error still carries
+			// the computed Matched/Unreachable), so it is propagated rather
+			// than discarded: callers need it to honor the error's own
+			// --show-unreachable hint without re-enumerating the org.
+			return nil, orgSel, err
+		}
+	}
+
 	if sel.Dedupe {
 		kept := targets[:0]
 		for _, t := range targets {
@@ -164,7 +212,124 @@ func ResolveTargets(ctx context.Context, sel Selector) ([]Target, error) {
 		}
 		targets = kept
 	}
-	return targets, nil
+	return targets, orgSel, nil
+}
+
+// filterByOrg keeps only the targets whose verified account satisfies the OU
+// and tag filters, annotating each with its org metadata, and reports which
+// matching accounts no local profile reaches.
+func filterByOrg(ctx context.Context, sel Selector, targets []Target) ([]Target, *OrgSelection, error) {
+	org, err := LoadOrg(ctx, OrgOptions{
+		Profile:    sel.OrgProfile,
+		AssumeRole: sel.OrgRole,
+		Refresh:    sel.OrgRefresh,
+		WantTags:   len(sel.AccountTags) > 0,
+	})
+	if err != nil {
+		// Fail closed. A selector that cannot be evaluated must never
+		// degrade into "no filter", which would silently widen
+		// "--ou eng/prod" into every profile on the machine.
+		return nil, nil, fmt.Errorf("org discovery failed, refusing to run unfiltered: %w", err)
+	}
+
+	matchedSet := make(map[string]bool)
+	var matchedIDs []string
+	for _, a := range org.Accounts {
+		if MatchAccount(a, sel.OU, sel.AccountTags) {
+			matchedSet[a.ID] = true
+			matchedIDs = append(matchedIDs, a.ID)
+		}
+	}
+	sort.Strings(matchedIDs)
+
+	reached := make(map[string]bool)
+	var unverified []Target
+	matched := 0
+	kept := targets[:0]
+	for _, t := range targets {
+		if t.PreflightErr != "" {
+			// An unverified target has no account id to join on, so it was
+			// never actually evaluated against the filter: it must not
+			// count as a match. Keep it in the result so the blocking
+			// error CheckVerified raises survives (dropping it would
+			// quietly narrow the fan-out and report its account, if any,
+			// as unreachable when in fact no account was ever
+			// established), but remember it separately so a zero-match
+			// error can explain that an apparently-empty OU might really
+			// be an unchecked identity.
+			unverified = append(unverified, t)
+			kept = append(kept, t)
+			continue
+		}
+		if !matchedSet[t.AccountID] {
+			continue
+		}
+		a := org.Accounts[t.AccountID]
+		t.OUPath = a.OUPath
+		t.OrgAccountName = a.Name
+		reached[t.AccountID] = true
+		kept = append(kept, t)
+		matched++
+	}
+
+	var unreachable []OrgAccount
+	for _, id := range matchedIDs {
+		if !reached[id] {
+			unreachable = append(unreachable, org.Accounts[id])
+		}
+	}
+
+	orgSel := &OrgSelection{Org: org, Matched: matchedIDs, Unreachable: unreachable}
+	if matched == 0 {
+		return nil, orgSel, noOrgMatchError(sel, len(matchedIDs), unverified)
+	}
+	return kept, orgSel, nil
+}
+
+// noOrgMatchError distinguishes the two situations that otherwise look
+// identical: a filter that matched no account at all, and one that matched
+// accounts none of your profiles can reach. That difference matters most
+// immediately before a fan-out.
+//
+// unverified lists targets that were carried through the filter unevaluated
+// because their identity preflight failed. Their presence can make an
+// otherwise-empty OU look populated to someone skimming the target list, so
+// when there are any, the message says so explicitly: a user whose one prod
+// profile has an expired SSO session should not read "no org account
+// matched" and conclude their OU is actually empty.
+func noOrgMatchError(sel Selector, matchedAccounts int, unverified []Target) error {
+	var what []string
+	if len(sel.OU) > 0 {
+		what = append(what, "--ou "+strings.Join(sel.OU, ","))
+	}
+	for k, v := range sel.AccountTags {
+		what = append(what, fmt.Sprintf("--account-tag %s=%s", k, v))
+	}
+	sort.Strings(what)
+	desc := strings.Join(what, " ")
+
+	var msg string
+	if matchedAccounts == 0 {
+		msg = fmt.Sprintf("no targets matched %s\n  no org account matched the filter\n  hint: check the OU path with \"awsmux targets --ou '*'\"", desc)
+	} else {
+		msg = fmt.Sprintf("no targets matched %s\n  %d accounts matched, 0 with a local profile\n  hint: run \"awsmux targets %s --show-unreachable\" to list them",
+			desc, matchedAccounts, desc)
+	}
+
+	if len(unverified) > 0 {
+		names := make([]string, len(unverified))
+		for i, t := range unverified {
+			names[i] = t.ID
+		}
+		sort.Strings(names)
+		plural := "s"
+		if len(unverified) == 1 {
+			plural = ""
+		}
+		msg += fmt.Sprintf("\n  %d target%s could not be checked against the filter because identity was not verified: %s",
+			len(unverified), plural, strings.Join(names, ", "))
+	}
+	return errors.New(msg)
 }
 
 // NewTarget builds a Target with its stable ID ("profile@region", or just

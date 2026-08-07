@@ -105,6 +105,10 @@ these properties (and if a change touches one, say so explicitly in the PR):
    printed exactly once, compared with `subtle.ConstantTimeCompare`). Any
    field that influences what executes must be added to the hash. Bump
    `PolicyVersion` when approval rules change.
+   Org metadata (`OUPath`, `OrgAccountName`) is hashed too, as of
+   `PolicyVersion` v3: it does not influence `BuildCommand`, but it is
+   rendered in the plan a human approves, and anything shown at approval
+   time must be covered by the integrity check.
 4. **Execute at most once, across processes.** `core.ClaimPlan` creates an
    `O_EXCL` `.claim` file; the claim is one-shot and never released. The MCP
    server additionally serializes its approval gate with `execMu`.
@@ -122,6 +126,14 @@ these properties (and if a change touches one, say so explicitly in the PR):
    by CI and agents. Never renumber or rename; only add.
 8. **Replay is a new decision, not a bypass.** `awsmux replay` re-verifies
    identities and re-applies the run-time gates fresh.
+9. **awsmux resolves credentials in exactly one place.** Fan-out always
+   shells out to `aws --profile <name>`, so the engine never holds
+   credential material. The single exception is `assumeRoleEnv` in
+   `internal/core/org.go`: when `--org-role` is set, awsmux assumes that
+   role and passes the temporary credentials as environment to the AWS
+   Organizations enumeration calls, and to nothing else. They are never
+   persisted (not even to `org-cache.json`), never logged, and never reach
+   execution. Keep that boundary; do not extend the exception to fan-out.
 
 ## Conventions
 
